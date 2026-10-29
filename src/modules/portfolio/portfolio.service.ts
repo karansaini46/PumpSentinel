@@ -20,7 +20,10 @@ import {
   FutureMarketDataError,
 } from '../execution/execution.types.js';
 import { PaperExecutionEngine, paperExecutionEngine } from '../execution/paper-engine.service.js';
-import { PaperTradingRepository, paperTradingRepository } from '../persistence/paper-trading.repository.js';
+import {
+  PaperTradingRepository,
+  paperTradingRepository,
+} from '../persistence/paper-trading.repository.js';
 import { logger } from '../observability/logger.js';
 
 export const DEFAULT_PORTFOLIO_CONFIG: PortfolioConfig = {
@@ -505,12 +508,7 @@ export class PortfolioService {
 
     pos.status = 'EMERGENCY_CLOSED';
     pos.closeReason = `EMERGENCY_CLOSE: ${reason}`;
-    void this.repository.updatePositionStatus(
-      tokenMint,
-      'EMERGENCY_CLOSED',
-      undefined,
-      new Date(),
-    );
+    void this.repository.updatePositionStatus(tokenMint, 'EMERGENCY_CLOSED', undefined, new Date());
 
     logger.warn({ tokenMint, reason }, '[PortfolioService] Emergency position closure completed');
     return sellTrade;

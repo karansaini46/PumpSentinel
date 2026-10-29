@@ -38,7 +38,10 @@ import {
   PaperTradingRepository,
   paperTradingRepository,
 } from '../persistence/paper-trading.repository.js';
-import { NotificationsService, notificationsService } from '../notifications/notifications.service.js';
+import {
+  NotificationsService,
+  notificationsService,
+} from '../notifications/notifications.service.js';
 import { logger } from '../observability/logger.js';
 
 export class PortfolioRiskController {
@@ -152,10 +155,7 @@ export class PortfolioRiskController {
     this.pausedAt = null;
     this.pauseTrigger = null;
 
-    logger.info(
-      { operatorReason, prevReason },
-      '[PortfolioRiskController] GLOBAL TRADING RESUMED',
-    );
+    logger.info({ operatorReason, prevReason }, '[PortfolioRiskController] GLOBAL TRADING RESUMED');
 
     void this.notifications.notify(
       'PORTFOLIO_RISK',
@@ -220,8 +220,7 @@ export class PortfolioRiskController {
       this.dailyStartingEquitySol > 0 ? (dailyLossSol / this.dailyStartingEquitySol) * 100 : 0;
 
     // Exposure percentage
-    const totalExposurePct =
-      totalEquitySol > 0 ? (totalExposureSol / totalEquitySol) * 100 : 0;
+    const totalExposurePct = totalEquitySol > 0 ? (totalExposureSol / totalEquitySol) * 100 : 0;
 
     const isDailyLossBreached = dailyLossPct >= this.config.maxDailyLossPct;
     const isDrawdownBreached = currentDrawdownPct >= this.config.maxDrawdownPct;
@@ -497,10 +496,13 @@ export class PortfolioRiskController {
 
     const quoteTime = new Date(currentQuote.observedAt).getTime();
     if (quoteTime > nowMs + 100) {
-      throw new FutureMarketDataError('Market quote timestamp is in the future relative to evaluation time.', {
-        quoteTime,
-        nowMs,
-      });
+      throw new FutureMarketDataError(
+        'Market quote timestamp is in the future relative to evaluation time.',
+        {
+          quoteTime,
+          nowMs,
+        },
+      );
     }
 
     if (currentQuote.isStale === true || nowMs - quoteTime > 60000) {
@@ -807,7 +809,10 @@ export class PortfolioRiskController {
           failedCount += 1;
         }
       } catch (err) {
-        logger.error({ mint: pos.tokenMint, err }, '[PortfolioRiskController] Emergency exit failed');
+        logger.error(
+          { mint: pos.tokenMint, err },
+          '[PortfolioRiskController] Emergency exit failed',
+        );
         failedCount += 1;
       }
     }
@@ -903,7 +908,8 @@ export class PortfolioRiskController {
         description: `Cash balance discrepancy detected: Memory=${recordedCashBalanceSol.toFixed(4)} SOL, DB=${dbAccountBalanceSol.toFixed(4)} SOL, Replayed Ledger=${replayedCashBalanceSol.toFixed(4)} SOL`,
         expectedValue: replayedCashBalanceSol,
         actualValue: recordedCashBalanceSol,
-        resolutionApplied: 'Synchronized memory and DB cash balance to replayed ledger ground truth',
+        resolutionApplied:
+          'Synchronized memory and DB cash balance to replayed ledger ground truth',
       });
       repairedIssues.push('Corrected cash balance to match ledger replay.');
     }
@@ -1019,6 +1025,9 @@ export class PortfolioRiskController {
     // 6. Execute full portfolio service reconciliation
     const portfolioReport = await this.portfolioService.reconcile();
     auditNotes.push(...portfolioReport.auditNotes);
+    auditNotes.push(
+      `Replayed ledger: computed realized PnL ${computedRealizedPnlSol.toFixed(4)} SOL, total fees ${totalFeesPaidSol.toFixed(4)} SOL`,
+    );
 
     // Synchronize controller equity tracking
     const currentEquity = this.portfolioService.getSummary().totalPortfolioValueSol;

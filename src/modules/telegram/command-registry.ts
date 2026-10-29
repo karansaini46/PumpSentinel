@@ -1,13 +1,30 @@
-import type { CommandDefinition } from './telegram.types.js';
+import type { CommandDefinition, TelegramCommandContext } from './telegram.types.js';
+import {
+  InspectCommandSchema,
+  PaginationSchema,
+  TopCommandSchema,
+  HistoryCommandSchema,
+} from './telegram.types.js';
+import {
+  escapeHtml,
+  sanitizeSecrets,
+  paginateArray,
+  shortenAddress,
+  formatSol,
+  formatUsd,
+  formatPct,
+} from './telegram-utils.js';
 import { healthService } from '../observability/health.service.js';
 import { portfolioService } from '../portfolio/portfolio.service.js';
+import { portfolioRiskController } from '../risk/portfolio-risk-controller.js';
 import { discoveryService } from '../discovery/discovery.service.js';
 import { ingestionStreamService } from '../ingestion/stream.service.js';
 import { strategyService } from '../strategy/strategy.service.js';
-import { paperExecutionEngine } from '../execution/paper-engine.service.js';
 import { riskService } from '../risk/risk.service.js';
 import { tokenAnalysisService } from '../analysis/index.js';
-import { walletHistoryService } from '../wallet-history/index.js';
+import { paperTradingRepository } from '../persistence/paper-trading.repository.js';
+import { configService } from '../configuration/config.service.js';
+import { logger } from '../observability/logger.js';
 
 export class CommandRegistry {
   private commands = new Map<string, CommandDefinition>();
@@ -29,437 +46,638 @@ export class CommandRegistry {
   }
 
   private registerDefaults(): void {
+    // =========================================================================
+    // 1. /start
+    // =========================================================================
     this.register({
       command: 'start',
       description: 'Welcome to PumpSentinel and safety overview',
-      handler: async ({ ctx }) => {
+      handler: async ({ replyHtml }: TelegramCommandContext) => {
         const text = [
-          '🛡️ *PumpSentinel Bot Online*',
+          '🛡️ <b>PumpSentinel Solana Sentinel Online</b>',
           '',
-          'Automated Solana pump.fun token monitor & paper-trading sentinel.',
+          'Automated Solana pump.fun token monitor &amp; independent portfolio-risk controller.',
           '',
-          '🔒 *Safety Guarantees:*',
-          '• 100% Simulated Paper-Trading.',
-          '• No real funds or wallet private keys are ever used.',
-          '• Optimized for resource-constrained 8 GB RAM Linux hosts.',
+          '🔒 <b>Operating Mode:</b>',
+          '• <b>Mode:</b> Strictly Simulated Paper-Trading Only.',
+          '• <b>Zero Real Funds:</b> Real wallet private keys are strictly forbidden and never touched.',
+          '• <b>Hardware:</b> Tuned for resource-constrained 8 GB RAM Linux hosts.',
           '',
-          'Type /help to see all available commands.',
+          'Type /help to view all available commands or /status to check monitoring.',
         ].join('\n');
-        await ctx.reply(text, { parse_mode: 'Markdown' });
+        await replyHtml(text);
       },
     });
 
+    // =========================================================================
+    // 2. /help
+    // =========================================================================
     this.register({
       command: 'help',
-      description: 'List available commands',
-      handler: async ({ ctx }) => {
+      description: 'List available commands and descriptions',
+      handler: async ({ replyHtml }: TelegramCommandContext) => {
         const text = [
-          '📋 *Available Commands:*',
+          '📋 <b>PumpSentinel Command Reference:</b>',
           '',
-          '/health - System health, RAM usage, and service statuses',
-          '/status - Token discovery and stream ingestion metrics',
-          '/portfolio - Simulated SOL balance, total PnL & win rate',
-          '/positions - List of active paper-trading positions',
-          '/buy <mint> <sol> - Execute a simulated paper BUY order',
-          '/sell <mint> - Execute a simulated paper SELL order',
-          '/analyze <mint> - In-depth token analysis, supply & authorities',
-          '/risk <mint> - View risk engine evaluation for a token',
-          '/creator <wallet> - On-chain creator wallet history & reputation',
-          '/reset_portfolio - Reset paper balance to initial 10 SOL',
-          '/help - Show this guide',
+          '<b>🛡️ Monitoring &amp; System:</b>',
+          '• /status — Ingestion stream, discovery stats &amp; pause status',
+          '• /health — System uptime, RAM usage &amp; subsystem health probes',
+          '• /settings — Configurable portfolio-risk limits &amp; parameters',
+          '',
+          '<b>💼 Portfolio &amp; PnL:</b>',
+          '• /paper — Paper-trading engine status &amp; strategy parameters',
+          '• /balance — Virtual cash balance, total equity &amp; drawdown metrics',
+          '• /pnl — Realized &amp; unrealized P&amp;L, win rate &amp; trade counts',
+          '• /positions [page] — Active paper positions &amp; EXIT_PENDING status',
+          '• /history [page] — Historical paper-trading ledger fills',
+          '',
+          '<b>🛑 Risk Controls (Sensitive):</b>',
+          '• /pause — Engage global trading pause (blocks new positions)',
+          '• /resume — Resume global trading (unblocks new positions)',
+          '',
+          '<b>🔍 Market &amp; Tokens:</b>',
+          '• /top [limit] — Top recently discovered pump.fun tokens',
+          '• /inspect &lt;address&gt; — Deep token analysis, authorities &amp; risk evaluation',
+          '',
+          'ℹ️ <i>All commands require authorized Telegram user-ID verification.</i>',
         ].join('\n');
-        await ctx.reply(text, { parse_mode: 'Markdown' });
+        await replyHtml(text);
       },
     });
 
+    // =========================================================================
+    // 3. /status
+    // =========================================================================
+    this.register({
+      command: 'status',
+      description: 'Operating mode, ingestion stream, and discovery metrics',
+      handler: async ({ replyHtml }: TelegramCommandContext) => {
+        const streamMetrics = ingestionStreamService.getMetrics();
+        const streamHealth = ingestionStreamService.getHealth();
+        const discStats = discoveryService.getStats();
+        const pauseDetails = portfolioRiskController.getPauseDetails();
+        const openPositions = portfolioService.getOpenPositions();
+        const pendingExits = portfolioRiskController.getExitPendingPositions();
+
+        const streamIcon = streamMetrics.status === 'CONNECTED' ? '🟢' : '🔴';
+        const pauseIcon = pauseDetails.isPaused ? '🛑' : '🟢';
+
+        const recentRejections = riskService.getGate().getRecentRejections(3);
+        const rejectionRows =
+          recentRejections.length > 0
+            ? recentRejections.map(
+                (r) =>
+                  `• <code>${shortenAddress(r.tokenMint)}</code> (${escapeHtml(r.tokenSymbol)}): ${escapeHtml(r.reasons[0] ?? 'Failed risk rule')}`,
+              )
+            : ['• None recorded (All evaluated tokens clean)'];
+
+        const text = [
+          '📊 <b>PumpSentinel System Status</b>',
+          '',
+          '<b>⚙️ Operating Mode:</b>',
+          '• Mode: <code>STRICTLY_SIMULATED_PAPER_TRADING</code>',
+          `• Global Trading: ${pauseIcon} <b>${pauseDetails.isPaused ? 'PAUSED' : 'ACTIVE'}</b>`,
+          pauseDetails.isPaused
+            ? `  <i>Reason: ${escapeHtml(pauseDetails.reason ?? 'N/A')} (${pauseDetails.trigger ?? 'MANUAL'})</i>`
+            : '',
+          '',
+          '<b>🔌 Data-Provider Health &amp; Ingestion:</b>',
+          `• Stream Provider: ${streamIcon} <b>${escapeHtml(streamMetrics.status)}</b> (Latency: ${streamHealth.latencyMs}ms)`,
+          `• Endpoint: <code>${escapeHtml(streamHealth.sanitizedEndpoint)}</code>`,
+          `• Events Ingested: <b>${streamMetrics.eventsIngested.toLocaleString()}</b>`,
+          `• Reconnects: ${streamHealth.reconnectCount}`,
+          `• Duplicates Dropped: ${streamMetrics.duplicatesPrevented.toLocaleString()}`,
+          '',
+          '<b>🔍 Token Discovery:</b>',
+          `• Total Discovered: <b>${discStats.totalDiscovered.toLocaleString()}</b>`,
+          `• Active Cache Size: <b>${discStats.activeCacheSize}</b>`,
+          `• Last Slot: ${discStats.lastProcessedSlot.toLocaleString()}`,
+          `• Avg Latency: ${discStats.averageDiscoveryLatencyMs}ms`,
+          '',
+          '<b>🛡️ Recent Risk Rejections:</b>',
+          ...rejectionRows,
+          '',
+          '<b>💼 Portfolio Snapshot:</b>',
+          `• Open Positions: <b>${openPositions.length}</b>`,
+          pendingExits.length > 0
+            ? `• 🚨 <b>Exit Pending:</b> <b>${pendingExits.length}</b> (Requires attention)`
+            : '• Exit Pending: 0',
+        ]
+          .filter(Boolean)
+          .join('\n');
+
+        await replyHtml(text);
+      },
+    });
+
+    // =========================================================================
+    // 4. /paper
+    // =========================================================================
+    this.register({
+      command: 'paper',
+      description: 'Paper-trading strategy settings and execution controls',
+      handler: async ({ replyHtml }: TelegramCommandContext) => {
+        const stratConfig = strategyService.getConfig();
+        const riskConfig = portfolioRiskController.getConfig();
+        const summary = portfolioService.getSummary();
+        const pauseDetails = portfolioRiskController.getPauseDetails();
+
+        const autoIcon = stratConfig.autoTradeEnabled ? '🟢' : '⚪';
+        const pauseIcon = pauseDetails.isPaused ? '🛑' : '🟢';
+
+        const text = [
+          '📝 <b>Simulated Paper-Trading Controls</b>',
+          '',
+          `• Mode: <code>SIMULATED_EXECUTION_ONLY</code>`,
+          `• Strategy Auto-Trade: ${autoIcon} <b>${stratConfig.autoTradeEnabled ? 'ENABLED' : 'DISABLED'}</b>`,
+          `• Trading Gate: ${pauseIcon} <b>${pauseDetails.isPaused ? 'PAUSED (Buys Blocked)' : 'ACTIVE'}</b>`,
+          '',
+          '<b>🎯 Strategy Execution Bounds:</b>',
+          `• Fixed Buy Size: <b>${stratConfig.fixedBuyAmountSol} SOL</b> ($${formatUsd(stratConfig.fixedBuyAmountSol * riskConfig.solPriceUsd)})`,
+          `• Take-Profit Target: <b>+${riskConfig.takeProfitPct}%</b>`,
+          `• Stop-Loss Threshold: <b>-${riskConfig.stopLossPct}%</b> <i>(Non-guaranteed)</i>`,
+          `• Max Holding Time: <b>${Math.round(riskConfig.maxHoldingDurationMs / 1000)}s</b> (${Math.round(riskConfig.maxHoldingDurationMs / 60000)}m)`,
+          `• Max Open Positions: <b>${riskConfig.maxConcurrentPositions}</b>`,
+          '',
+          '<b>💰 Available Capital:</b>',
+          `• Cash Balance: <b>${formatSol(summary.currentSolBalance)} SOL</b> ($${formatUsd(summary.currentCashBalanceUsd)})`,
+          `• Total Trades Replayed: ${summary.totalTrades}`,
+        ].join('\n');
+
+        await replyHtml(text);
+      },
+    });
+
+    // =========================================================================
+    // 5. /pause (Sensitive)
+    // =========================================================================
+    this.register({
+      command: 'pause',
+      description: 'Engage global trading pause (blocks new positions)',
+      isSensitive: true,
+      handler: async ({ replyHtml, userId, username }: TelegramCommandContext) => {
+        portfolioRiskController.pauseTrading(
+          `Manual pause by Telegram operator ${username ?? userId}`,
+          'MANUAL',
+        );
+
+        const text = [
+          '🛑 <b>Global Trading Pause Engaged</b>',
+          '',
+          '• <b>Trigger:</b> <code>MANUAL</code>',
+          `• <b>Operator:</b> <code>${escapeHtml(username ?? String(userId))}</code>`,
+          '• <b>Policy:</b> All new simulated positions are <b>strictly blocked</b>.',
+          '• <b>Exits:</b> Existing positions will continue to be monitored and can exit.',
+          '',
+          'Use /resume to resume global trading.',
+        ].join('\n');
+
+        await replyHtml(text);
+      },
+    });
+
+    // =========================================================================
+    // 6. /resume (Sensitive)
+    // =========================================================================
+    this.register({
+      command: 'resume',
+      description: 'Resume global trading (unblocks new positions)',
+      isSensitive: true,
+      handler: async ({ replyHtml, userId, username }: TelegramCommandContext) => {
+        portfolioRiskController.resumeTrading(
+          `Manual resume by Telegram operator ${username ?? userId}`,
+        );
+
+        const text = [
+          '✅ <b>Global Trading Resumed</b>',
+          '',
+          `• <b>Operator:</b> <code>${escapeHtml(username ?? String(userId))}</code>`,
+          '• <b>Policy:</b> New position entries are now <b>unblocked</b>.',
+          '',
+          'Type /status to verify trading activity.',
+        ].join('\n');
+
+        await replyHtml(text);
+      },
+    });
+
+    // =========================================================================
+    // 7. /positions [page]
+    // =========================================================================
+    this.register({
+      command: 'positions',
+      description: 'List active open paper positions and EXIT_PENDING tokens',
+      handler: async ({ replyHtml, args }: TelegramCommandContext) => {
+        const parseRes = PaginationSchema.safeParse({ page: args[0] });
+        const page = parseRes.success ? parseRes.data.page : 1;
+
+        const openPositions = portfolioService.getOpenPositions();
+        const pendingExits = portfolioRiskController.getExitPendingPositions();
+
+        if (openPositions.length === 0 && pendingExits.length === 0) {
+          await replyHtml('ℹ️ <b>No active positions or pending exits</b> in simulated portfolio.');
+          return;
+        }
+
+        const pageSize = 4;
+        const pagination = paginateArray(openPositions, page, pageSize);
+        const riskConfig = portfolioRiskController.getConfig();
+        const nowMs = Date.now();
+
+        const positionBlocks = pagination.items.map((pos, idx) => {
+          const globalIdx = (pagination.page - 1) * pageSize + idx + 1;
+          const pnlSol = pos.unrealizedPnlSol;
+          const pnlPct = pos.unrealizedPnlPercent;
+          const pnlIcon = pnlSol >= 0 ? '🟢' : '🔴';
+
+          const holdingDurationMs = nowMs - pos.openedAt.getTime();
+          const holdingSecs = Math.round(holdingDurationMs / 1000);
+          const maxSecs = Math.round(riskConfig.maxHoldingDurationMs / 1000);
+
+          const isExitPending = pos.status === 'EXIT_PENDING';
+          const statusBadge = isExitPending ? '🚨 <b>EXIT_PENDING</b>' : '🟢 <b>OPEN</b>';
+
+          return [
+            `${globalIdx}. <b>${escapeHtml(pos.tokenSymbol)}</b> — ${statusBadge}`,
+            `   • Mint: <code>${pos.tokenMint}</code>`,
+            `   • Tokens: <b>${pos.amountTokens.toLocaleString(undefined, { maximumFractionDigits: 2 })}</b>`,
+            `   • Entry: <code>${formatSol(pos.entryPriceSol)} SOL</code> ($${formatUsd(pos.entryPriceUsd)})`,
+            `   • Current: <code>${formatSol(pos.currentPriceSol)} SOL</code> ($${formatUsd(pos.currentPriceUsd)})`,
+            `   • Invested: <b>${formatSol(pos.solInvested)} SOL</b> ($${formatUsd(pos.usdInvested)})`,
+            `   • Unrealized PnL: ${pnlIcon} <b>${formatSol(pnlSol)} SOL</b> (${formatPct(pnlPct)})`,
+            `   • Holding Time: <b>${holdingSecs}s / ${maxSecs}s</b>`,
+            isExitPending && pos.exitPendingDetails
+              ? `   ⚠️ <i>Exit Failure: ${escapeHtml(pos.exitPendingDetails.failureReason)}</i>`
+              : '',
+          ]
+            .filter(Boolean)
+            .join('\n');
+        });
+
+        const pendingNotice =
+          pendingExits.length > 0
+            ? `\n🚨 <b>Alert: ${pendingExits.length} position(s) marked EXIT_PENDING!</b> Check pool liquidity.`
+            : '';
+
+        const text = [
+          `💼 <b>Open Simulated Positions (${openPositions.length})</b> — Page ${pagination.page}/${pagination.totalPages}:`,
+          '',
+          positionBlocks.join('\n\n'),
+          '',
+          pagination.totalPages > 1
+            ? `<i>Navigate with: /positions &lt;page&gt; (e.g. /positions ${pagination.page + 1})</i>`
+            : '',
+          pendingNotice,
+        ]
+          .filter(Boolean)
+          .join('\n');
+
+        await replyHtml(text);
+      },
+    });
+
+    // =========================================================================
+    // 8. /balance
+    // =========================================================================
+    this.register({
+      command: 'balance',
+      description: 'View virtual cash balance, total equity, and drawdown metrics',
+      handler: async ({ replyHtml }: TelegramCommandContext) => {
+        const metrics = portfolioRiskController.getEquityMetrics();
+        const riskConfig = portfolioRiskController.getConfig();
+
+        const drawdownIcon = metrics.currentDrawdownPct >= riskConfig.maxDrawdownPct ? '🔴' : '🟢';
+        const dailyLossIcon = metrics.dailyLossPct >= riskConfig.maxDailyLossPct ? '🔴' : '🟢';
+
+        const text = [
+          '💰 <b>Simulated Virtual Portfolio Balance</b>',
+          '',
+          '<b>💵 Capital Breakdown:</b>',
+          `• Available Cash: <b>${formatSol(metrics.cashBalanceSol)} SOL</b> ($${formatUsd(metrics.cashBalanceUsd)})`,
+          `• Open Positions Value: <b>${formatSol(metrics.openPositionsValueSol)} SOL</b> ($${formatUsd(metrics.openPositionsValueUsd)})`,
+          `• Total Portfolio Equity: <b>${formatSol(metrics.totalEquitySol)} SOL</b> ($${formatUsd(metrics.totalEquityUsd)})`,
+          `• Starting Daily Equity: ${formatSol(metrics.dailyStartingEquitySol)} SOL ($${formatUsd(metrics.dailyStartingEquityUsd)})`,
+          `• Peak Equity (High-Water): <b>${formatSol(metrics.peakEquitySol)} SOL</b> ($${formatUsd(metrics.peakEquityUsd)})`,
+          '',
+          '<b>🛡️ Risk &amp; Drawdown Limits:</b>',
+          `• Current Drawdown: ${drawdownIcon} <b>${metrics.currentDrawdownPct.toFixed(2)}%</b> (Max limit: ${riskConfig.maxDrawdownPct}%)`,
+          `• Daily Loss: ${dailyLossIcon} <b>${metrics.dailyLossPct.toFixed(2)}%</b> (Max limit: ${riskConfig.maxDailyLossPct}%)`,
+          `• Total Exposure: <b>${formatSol(metrics.totalExposureSol)} SOL</b> (${metrics.totalExposurePct.toFixed(1)}% / ${riskConfig.maxTotalExposurePct}% max)`,
+          `• Open Positions: ${metrics.openPositionsCount} / ${riskConfig.maxConcurrentPositions} max`,
+        ].join('\n');
+
+        await replyHtml(text);
+      },
+    });
+
+    // =========================================================================
+    // 9. /pnl
+    // =========================================================================
+    this.register({
+      command: 'pnl',
+      description: 'Detailed realized and unrealized P&L breakdown',
+      handler: async ({ replyHtml }: TelegramCommandContext) => {
+        const s = portfolioService.getSummary();
+        const totalPnlIcon = s.totalPnlSol >= 0 ? '🟢' : '🔴';
+        const realizedIcon = s.realizedPnlSol >= 0 ? '🟢' : '🔴';
+        const unrealizedIcon = s.unrealizedPnlSol >= 0 ? '🟢' : '🔴';
+
+        const text = [
+          '📈 <b>Simulated Portfolio P&amp;L Report</b>',
+          '',
+          '<b>📊 Profit &amp; Loss Breakdown:</b>',
+          `• Total Combined PnL: ${totalPnlIcon} <b>${s.totalPnlSol > 0 ? '+' : ''}${formatSol(s.totalPnlSol)} SOL</b> ($${s.totalPnlUsd > 0 ? '+' : ''}${formatUsd(s.totalPnlUsd)})`,
+          `• Total Return: <b>${formatPct(s.totalPnlPercent)}</b>`,
+          `• Realized PnL: ${realizedIcon} <b>${s.realizedPnlSol > 0 ? '+' : ''}${formatSol(s.realizedPnlSol)} SOL</b> ($${formatUsd(s.realizedPnlUsd)})`,
+          `• Unrealized PnL: ${unrealizedIcon} <b>${s.unrealizedPnlSol > 0 ? '+' : ''}${formatSol(s.unrealizedPnlSol)} SOL</b> ($${formatUsd(s.unrealizedPnlUsd)})`,
+          `• Simulated Fees Paid: <code>${formatSol(s.totalFeesPaidSol)} SOL</code> ($${formatUsd(s.totalFeesPaidUsd)})`,
+          '',
+          '<b>🏆 Trading Performance:</b>',
+          `• Total Trades: <b>${s.totalTrades}</b>`,
+          `• Wins: <b>${s.winCount}</b> | Losses: <b>${s.lossCount}</b>`,
+          `• Win Rate: <b>${s.winRatePercent.toFixed(1)}%</b>`,
+          `• Active Positions: ${s.openPositionsCount}`,
+        ].join('\n');
+
+        await replyHtml(text);
+      },
+    });
+
+    // =========================================================================
+    // 10. /top [limit]
+    // =========================================================================
+    this.register({
+      command: 'top',
+      description: 'Top discovered pump.fun tokens: /top [limit]',
+      handler: async ({ replyHtml, args }: TelegramCommandContext) => {
+        const parseRes = TopCommandSchema.safeParse({ limit: args[0] });
+        const limit = parseRes.success ? parseRes.data.limit : 5;
+
+        const tokens = discoveryService.getCachedTokens();
+        if (tokens.length === 0) {
+          await replyHtml('ℹ️ No tokens discovered yet in active ingestion stream.');
+          return;
+        }
+
+        // Sort by initial liquidity or discovery recency
+        const sorted = [...tokens].sort(
+          (a, b) => b.initialLiquiditySol - a.initialLiquiditySol || b.slot - a.slot,
+        );
+        const topTokens = sorted.slice(0, limit);
+
+        const rows = topTokens.map((t, idx) => {
+          const synth = t.isSynthetic ? ' [SYNTHETIC]' : '';
+          return [
+            `<b>${idx + 1}. ${escapeHtml(t.symbol)}</b> — <i>${escapeHtml(t.name)}</i>${synth}`,
+            `   • Mint: <code>${t.mint}</code>`,
+            `   • Liquidity: <b>${t.initialLiquiditySol.toFixed(2)} SOL</b>`,
+            `   • Creator: <code>${shortenAddress(t.creator)}</code>`,
+            `   • Slot: ${t.slot} (Latency: ${t.discoveryLatencyMs}ms)`,
+            `   • State: <code>${escapeHtml(t.lifecycleState)}</code>`,
+          ].join('\n');
+        });
+
+        const text = [
+          `🔥 <b>Top ${topTokens.length} Discovered Tokens</b> (by Liquidity):`,
+          '',
+          rows.join('\n\n'),
+          '',
+          '<i>Use /inspect &lt;address&gt; for deep safety and risk analysis.</i>',
+        ].join('\n');
+
+        await replyHtml(text);
+      },
+    });
+
+    // =========================================================================
+    // 11. /inspect <token_address>
+    // =========================================================================
+    this.register({
+      command: 'inspect',
+      description: 'Deep token risk inspection: /inspect <token_address>',
+      handler: async ({ replyHtml, args }: TelegramCommandContext) => {
+        const parseRes = InspectCommandSchema.safeParse({ tokenAddress: args[0] });
+        if (!parseRes.success) {
+          const errs = parseRes.error.issues.map((i) => i.message).join('; ');
+          await replyHtml(
+            `❌ <b>Invalid Command Argument:</b>\n${escapeHtml(errs)}\n\n<b>Usage:</b> <code>/inspect &lt;token_address&gt;</code>\n<b>Example:</b> <code>/inspect 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P</code>`,
+          );
+          return;
+        }
+
+        const mint = parseRes.data.tokenAddress;
+        const cached = discoveryService.getToken(mint);
+
+        try {
+          const analysisReport = await tokenAnalysisService.analyzeToken(mint, {
+            creatorAddress: cached?.creator,
+            bondingCurveAddress: cached?.bondingCurve,
+            initialLiquiditySol: cached?.initialLiquiditySol ?? 25.0,
+            isSynthetic: cached?.isSynthetic,
+          });
+
+          const gateDecision = riskService.evaluateGate({
+            mint,
+            symbol: cached?.symbol ?? 'TOKEN',
+            analysisReport,
+            customLiquiditySol: cached?.initialLiquiditySol ?? 25.0,
+          });
+
+          const existingPosition = portfolioService.getPosition(mint);
+
+          const gateIcon =
+            gateDecision.outcome === 'ELIGIBLE_FOR_STRATEGY'
+              ? '🟢'
+              : gateDecision.outcome === 'NEEDS_RECHECK'
+                ? '🟡'
+                : '🔴';
+
+          const mintAuthRevoked = analysisReport.authorities.isMintAuthorityRevoked.value === true;
+          const freezeAuthRevoked =
+            analysisReport.authorities.isFreezeAuthorityRevoked.value === true;
+
+          const text = [
+            `🔍 <b>Deep Token Inspection</b>`,
+            `• Token: <b>${escapeHtml(cached?.symbol ?? 'UNKNOWN')}</b> (${escapeHtml(cached?.name ?? 'Unknown Token')})`,
+            `• Mint Address: <code>${mint}</code>`,
+            '',
+            `<b>🛡️ Risk Gate Decision:</b> ${gateIcon} <b>${escapeHtml(gateDecision.outcome)}</b>`,
+            `• Decision ID: <code>${gateDecision.decisionId.slice(0, 8)}...</code>`,
+            `• Passed: <b>${gateDecision.passed ? 'YES' : 'NO'}</b>`,
+            gateDecision.reasons.length > 0
+              ? `• Gate Flags:\n  ${gateDecision.reasons.map((r) => `— ${escapeHtml(r)}`).join('\n  ')}`
+              : '• Gate Flags: None (Clean Profile)',
+            '',
+            '<b>🔒 Safety &amp; Contract Authorities:</b>',
+            `• Mint Authority Revoked: ${mintAuthRevoked ? '✅ YES' : '❌ NO'}`,
+            `• Freeze Authority Revoked: ${freezeAuthRevoked ? '✅ YES' : '❌ NO'}`,
+            `• Top 10 Non-Curve Concentration: <b>${analysisReport.largestHolders.nonCurveTop10Percentage.value}%</b>`,
+            `• Bonding Curve Supply: <b>${analysisReport.largestHolders.bondingCurvePercentage.value}%</b>`,
+            '',
+            '<b>👨‍💻 Creator Reputation Profile:</b>',
+            `• Creator Address: <code>${cached?.creator ?? 'Unknown'}</code>`,
+            `• Wallet Age: ${analysisReport.creatorHistory.walletAgeDays.value} days`,
+            `• Reputation Tier: <b>${escapeHtml(String(analysisReport.creatorHistory.reputationTier.value))}</b>`,
+            `• Creator Holdings: <b>${analysisReport.creatorHoldings.percentageOfSupply.value}%</b>`,
+            '',
+            '<b>💧 Liquidity &amp; Market Depth:</b>',
+            `• Initial Liquidity: <b>${cached?.initialLiquiditySol ?? analysisReport.liquidityAndDepth.liquiditySol.value} SOL</b>`,
+            `• Est. Price: <code>${formatSol(Number(analysisReport.liquidityAndDepth.currentPriceSol.value))} SOL</code>`,
+            `• Curve Progress: <b>${analysisReport.liquidityAndDepth.bondingCurveProgressPct.value}%</b>`,
+            `• Completeness: <b>${analysisReport.overallSummary.dataCompletenessPct}%</b>`,
+            '',
+            existingPosition
+              ? `💼 <b>Active Position:</b> YES (${existingPosition.amountTokens.toFixed(0)} tokens, PnL: ${formatPct(existingPosition.unrealizedPnlPercent)})`
+              : '💼 <b>Active Position:</b> NO',
+          ].join('\n');
+
+          await replyHtml(text);
+        } catch (err) {
+          logger.error({ mint, err }, '[CommandRegistry] Token inspection failed');
+          await replyHtml(
+            `❌ <b>Inspection Failed:</b> ${escapeHtml((err as Error).message ?? 'Unknown error')}`,
+          );
+        }
+      },
+    });
+
+    // =========================================================================
+    // 12. /history [page]
+    // =========================================================================
+    this.register({
+      command: 'history',
+      description: 'Historical paper trade ledger fills: /history [page]',
+      handler: async ({ replyHtml, args }: TelegramCommandContext) => {
+        const parseRes = HistoryCommandSchema.safeParse({ page: args[0] });
+        const page = parseRes.success ? parseRes.data.page : 1;
+
+        const allTrades = await paperTradingRepository.getAllTrades();
+        if (allTrades.length === 0) {
+          await replyHtml('ℹ️ <b>No trade fills recorded yet</b> in persistent paper ledger.');
+          return;
+        }
+
+        const pageSize = 5;
+        // Sort descending by executedAt
+        const sorted = [...allTrades].sort(
+          (a, b) => b.executedAt.getTime() - a.executedAt.getTime(),
+        );
+        const pagination = paginateArray(sorted, page, pageSize);
+
+        const tradeRows = pagination.items.map((trade, idx) => {
+          const globalIdx = (pagination.page - 1) * pageSize + idx + 1;
+          const sideIcon = trade.side === 'BUY' ? '🔵' : '🟢';
+
+          return [
+            `${globalIdx}. ${sideIcon} <b>${trade.side}</b> — <code>${shortenAddress(trade.tokenMint)}</code>`,
+            `   • Executed: ${trade.executedAt.toISOString().replace('T', ' ').slice(0, 19)} UTC`,
+            `   • Tokens: <b>${trade.amountTokens.toLocaleString(undefined, { maximumFractionDigits: 2 })}</b>`,
+            `   • Fill Price: <code>${formatSol(trade.priceSol)} SOL</code>`,
+            `   • Gross Value: <b>${formatSol(trade.totalSol)} SOL</b>`,
+            `   • Fee: <code>${formatSol(trade.simulatedFeeSol)} SOL</code> (Slip: ${trade.slippageBps} bps)`,
+            `   • Reason: <i>${escapeHtml(trade.reason)}</i>`,
+          ].join('\n');
+        });
+
+        const text = [
+          `📜 <b>Paper Trade Ledger History (${allTrades.length} Trades)</b> — Page ${pagination.page}/${pagination.totalPages}:`,
+          '',
+          tradeRows.join('\n\n'),
+          '',
+          pagination.totalPages > 1
+            ? `<i>Navigate with: /history &lt;page&gt; (e.g. /history ${pagination.page + 1})</i>`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
+
+        await replyHtml(text);
+      },
+    });
+
+    // =========================================================================
+    // 13. /settings (Sensitive)
+    // =========================================================================
+    this.register({
+      command: 'settings',
+      description: 'View current risk parameters and sanitized environment settings',
+      isSensitive: true,
+      handler: async ({ replyHtml }: TelegramCommandContext) => {
+        const riskConfig = portfolioRiskController.getConfig();
+        const stratConfig = strategyService.getConfig();
+        const allConfig = configService.getAll();
+
+        const sanitizedSolanaHttp = sanitizeSecrets(allConfig.SOLANA_RPC_HTTP_URL);
+        const sanitizedSolanaWs = sanitizeSecrets(allConfig.SOLANA_RPC_WS_URL);
+        const sanitizedHeliusHttp = allConfig.HELIUS_RPC_HTTP_URL
+          ? sanitizeSecrets(allConfig.HELIUS_RPC_HTTP_URL)
+          : 'None';
+
+        const text = [
+          '⚙️ <b>PumpSentinel Configuration &amp; Risk Settings</b>',
+          '',
+          '<b>🛡️ Portfolio-Risk Controller Limits:</b>',
+          `• Stop-Loss Threshold: <b>-${riskConfig.stopLossPct}%</b>`,
+          `• Take-Profit Target: <b>+${riskConfig.takeProfitPct}%</b>`,
+          `• Maximum Holding Time: <b>${Math.round(riskConfig.maxHoldingDurationMs / 1000)}s</b> (${Math.round(riskConfig.maxHoldingDurationMs / 60000)}m)`,
+          `• Maximum Daily Loss: <b>${riskConfig.maxDailyLossPct}%</b> of daily equity`,
+          `• Maximum Drawdown: <b>${riskConfig.maxDrawdownPct}%</b> from high-water mark`,
+          `• Maximum Position Size: <b>${riskConfig.maxPositionSizeSol} SOL</b> ($${formatUsd(riskConfig.maxPositionSizeSol * riskConfig.solPriceUsd)})`,
+          `• Maximum Concurrent Positions: <b>${riskConfig.maxConcurrentPositions}</b>`,
+          `• Maximum Total Exposure: <b>${riskConfig.maxTotalExposureSol} SOL</b> (${riskConfig.maxTotalExposurePct}%)`,
+          '',
+          '<b>🤖 Strategy Parameters:</b>',
+          `• Auto-Trade Enabled: <b>${stratConfig.autoTradeEnabled ? 'YES' : 'NO'}</b>`,
+          `• Fixed Buy Size: <b>${stratConfig.fixedBuyAmountSol} SOL</b>`,
+          '',
+          '<b>🌐 RPC Endpoints (Sanitized - Zero Secrets Exposed):</b>',
+          `• Solana HTTP: <code>${escapeHtml(sanitizedSolanaHttp)}</code>`,
+          `• Solana WS: <code>${escapeHtml(sanitizedSolanaWs)}</code>`,
+          `• Helius RPC: <code>${escapeHtml(sanitizedHeliusHttp)}</code>`,
+          `• Rate Limit: ${allConfig.RPC_MAX_REQUESTS_PER_SECOND} req/sec`,
+          `• Authorized Operators: ${allConfig.TELEGRAM_AUTHORIZED_USER_IDS.length} user(s)`,
+        ].join('\n');
+
+        await replyHtml(text);
+      },
+    });
+
+    // =========================================================================
+    // 14. /health
+    // =========================================================================
     this.register({
       command: 'health',
-      description: 'Check system health and memory usage',
-      handler: async ({ ctx }) => {
+      description: 'Check system health, memory usage, and subsystem statuses',
+      handler: async ({ replyHtml }: TelegramCommandContext) => {
         const health = await healthService.evaluateHealth();
         const mem = health.memory;
         const icon = health.status === 'ok' ? '✅' : health.status === 'degraded' ? '⚠️' : '❌';
 
-        const text = [
-          `${icon} *System Health: ${health.status.toUpperCase()}*`,
-          `⏱ *Uptime:* ${health.uptimeSeconds}s`,
-          `🧠 *RSS Memory:* ${mem.rssMb} MB / Heap: ${mem.heapUsedMb} MB`,
-          `💻 *OS Memory Used:* ${mem.osUsedPercent}% (Free: ${mem.osFreeMb} MB)`,
-          '',
-          `*Subsystems:*`,
-          ...Object.entries(health.checks).map(([name, check]) => {
-            const chkIcon = check.status === 'ok' ? '✅' : '⚠️';
-            return `• ${chkIcon} *${name}:* ${check.status}${check.error ? ` (${check.error})` : ''}`;
-          }),
-        ].join('\n');
-        await ctx.reply(text, { parse_mode: 'Markdown' });
-      },
-    });
+        const days = Math.floor(health.uptimeSeconds / 86400);
+        const hours = Math.floor((health.uptimeSeconds % 86400) / 3600);
+        const mins = Math.floor((health.uptimeSeconds % 3600) / 60);
+        const secs = Math.floor(health.uptimeSeconds % 60);
+        const uptimeStr = `${days > 0 ? `${days}d ` : ''}${hours}h ${mins}m ${secs}s`;
 
-    this.register({
-      command: 'status',
-      description: 'Ingestion and token discovery status',
-      handler: async ({ ctx }) => {
-        const streamMetrics = ingestionStreamService.getMetrics();
-        const discStats = discoveryService.getStats();
-        const stratConfig = strategyService.getConfig();
-
-        const text = [
-          '📊 *PumpSentinel Stream Status*',
-          '',
-          `• Ingestion Status: *${streamMetrics.status}*`,
-          `• Events Processed: *${streamMetrics.eventsIngested}*`,
-          `• Tokens Discovered: *${discStats.totalDiscovered}*`,
-          `• Active Cache Size: *${discStats.activeCacheSize}*`,
-          `• Auto-Trade Enabled: *${stratConfig.autoTradeEnabled ? 'YES' : 'NO'}*`,
-          `• Default Buy Size: *${stratConfig.fixedBuyAmountSol} SOL*`,
-          `• Take Profit Target: *+${stratConfig.takeProfitPct}%*`,
-          `• Stop Loss Threshold: *-${stratConfig.stopLossPct}%*`,
-        ].join('\n');
-        await ctx.reply(text, { parse_mode: 'Markdown' });
-      },
-    });
-
-    this.register({
-      command: 'portfolio',
-      description: 'View simulated portfolio balance and PnL',
-      handler: async ({ ctx }) => {
-        const p = portfolioService.getSummary();
-        const pnlIcon = p.totalPnlSol >= 0 ? '🟢' : '🔴';
-
-        const text = [
-          '💼 *Simulated Paper Portfolio*',
-          '',
-          `💰 *Available Balance:* ${p.currentSolBalance} SOL`,
-          `📈 *Invested:* ${p.totalInvestedSol} SOL`,
-          `🏦 *Total Value:* ${p.totalPortfolioValueSol} SOL`,
-          '',
-          `${pnlIcon} *Total PnL:* ${p.totalPnlSol > 0 ? '+' : ''}${p.totalPnlSol} SOL (${p.totalPnlPercent}%)`,
-          `• Realized PnL: ${p.realizedPnlSol} SOL`,
-          `• Unrealized PnL: ${p.unrealizedPnlSol} SOL`,
-          '',
-          `🎯 *Performance:*`,
-          `• Open Positions: ${p.openPositionsCount}`,
-          `• Total Trades: ${p.totalTrades}`,
-          `• Win / Loss: ${p.winCount}W / ${p.lossCount}L (Win Rate: ${p.winRatePercent}%)`,
-        ].join('\n');
-        await ctx.reply(text, { parse_mode: 'Markdown' });
-      },
-    });
-
-    this.register({
-      command: 'positions',
-      description: 'List open paper positions',
-      handler: async ({ ctx }) => {
-        const positions = portfolioService.getOpenPositions();
-        if (positions.length === 0) {
-          await ctx.reply('ℹ️ No active open positions in simulated portfolio.');
-          return;
-        }
-
-        const lines = positions.map((pos, idx) => {
-          const pnlIcon = pos.unrealizedPnlSol >= 0 ? '🟢' : '🔴';
-          return [
-            `${idx + 1}. *${pos.tokenSymbol}* (\`${pos.tokenMint.slice(0, 6)}...${pos.tokenMint.slice(-4)}\`)`,
-            `   • Tokens: ${pos.amountTokens.toFixed(2)}`,
-            `   • Entry: ${pos.entryPriceSol.toFixed(6)} SOL`,
-            `   • Current: ${pos.currentPriceSol.toFixed(6)} SOL`,
-            `   • Invested: ${pos.solInvested.toFixed(4)} SOL`,
-            `   • PnL: ${pnlIcon} ${pos.unrealizedPnlSol >= 0 ? '+' : ''}${pos.unrealizedPnlSol.toFixed(4)} SOL (${pos.unrealizedPnlPercent.toFixed(2)}%)`,
-          ].join('\n');
+        const checkRows = Object.entries(health.checks).map(([name, check]) => {
+          const chkIcon = check.status === 'ok' ? '✅' : '⚠️';
+          const errStr = check.error ? ` (${escapeHtml(check.error)})` : '';
+          return `• ${chkIcon} <b>${escapeHtml(name)}:</b> <code>${escapeHtml(check.status)}</code>${errStr}`;
         });
 
-        await ctx.reply(
-          `📋 *Active Open Positions (${positions.length}):*\n\n${lines.join('\n\n')}`,
-          {
-            parse_mode: 'Markdown',
-          },
-        );
-      },
-    });
-
-    this.register({
-      command: 'buy',
-      description: 'Simulate paper buy: /buy <mint> <solAmount>',
-      handler: async ({ ctx, args }) => {
-        const [mint, solAmountStr] = args;
-        if (!mint || !solAmountStr) {
-          await ctx.reply('Usage: `/buy <tokenMint> <solAmount>`\nExample: `/buy 6EF8... 0.5`', {
-            parse_mode: 'Markdown',
-          });
-          return;
-        }
-
-        const solAmount = Number(solAmountStr);
-        if (Number.isNaN(solAmount) || solAmount <= 0) {
-          await ctx.reply('❌ Invalid SOL amount provided.');
-          return;
-        }
-
-        try {
-          const cachedToken = discoveryService.getToken(mint);
-          const symbol = cachedToken?.symbol ?? 'TOKEN';
-          const mockPrice = 0.00005; // Fallback mock price
-
-          // Rule Invariant: Token must pass Risk Gate before purchase
-          const riskDecision = riskService.evaluateGate({
-            mint,
-            symbol,
-            customLiquiditySol: cachedToken?.initialLiquiditySol ?? 25.0,
-          });
-
-          if (riskDecision.outcome !== 'ELIGIBLE_FOR_STRATEGY') {
-            await ctx.reply(
-              `❌ *Risk Gate Rejection*\n• Outcome: *${riskDecision.outcome}*\n• Reasons:\n${riskDecision.reasons.map((r) => `  - ${r}`).join('\n')}`,
-              { parse_mode: 'Markdown' },
-            );
-            return;
-          }
-
-          const strategySignal = {
-            action: 'BUY' as const,
-            tokenMint: mint,
-            tokenSymbol: symbol,
-            sizeSol: solAmount,
-            confidence: 0.9,
-            reason: 'Manual Telegram /buy command authorized',
-            timestamp: new Date(),
-          };
-
-          const trade = paperExecutionEngine.executeSimulatedOrder({
-            tokenMint: mint,
-            tokenSymbol: symbol,
-            side: 'BUY',
-            solAmount,
-            currentPriceSol: mockPrice,
-            reason: 'Manual Telegram command /buy',
-            riskDecision,
-            strategySignal,
-          });
-
-          portfolioService.recordTrade(trade);
-
-          await ctx.reply(
-            [
-              '✅ *Simulated Paper BUY Executed*',
-              `• Token: *${trade.tokenSymbol}* (\`${trade.tokenMint.slice(0, 8)}...\`)`,
-              `• Spent: *${trade.totalSol} SOL*`,
-              `• Received: *${trade.amountTokens.toFixed(2)} tokens*`,
-              `• Fill Price: *${trade.executedPriceSol.toFixed(8)} SOL*`,
-              `• Sim Fee: *${trade.simulatedFeeSol} SOL*`,
-            ].join('\n'),
-            { parse_mode: 'Markdown' },
-          );
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          await ctx.reply(`❌ Order failed: ${message}`);
-        }
-      },
-    });
-
-    this.register({
-      command: 'sell',
-      description: 'Simulate paper sell: /sell <mint>',
-      handler: async ({ ctx, args }) => {
-        const [mint] = args;
-        if (!mint) {
-          await ctx.reply('Usage: `/sell <tokenMint>`', { parse_mode: 'Markdown' });
-          return;
-        }
-
-        const position = portfolioService.getPosition(mint);
-        if (!position) {
-          await ctx.reply(`❌ No open position found for token mint: \`${mint}\``, {
-            parse_mode: 'Markdown',
-          });
-          return;
-        }
-
-        try {
-          const trade = paperExecutionEngine.executeSimulatedOrder({
-            tokenMint: mint,
-            tokenSymbol: position.tokenSymbol,
-            side: 'SELL',
-            tokenAmount: position.amountTokens,
-            currentPriceSol: position.currentPriceSol,
-            reason: 'Manual Telegram command /sell',
-          });
-
-          portfolioService.recordTrade(trade);
-
-          await ctx.reply(
-            [
-              '✅ *Simulated Paper SELL Executed*',
-              `• Token: *${trade.tokenSymbol}*`,
-              `• Sold: *${trade.amountTokens.toFixed(2)} tokens*`,
-              `• Return: *${trade.totalSol.toFixed(4)} SOL*`,
-              `• Fill Price: *${trade.executedPriceSol.toFixed(8)} SOL*`,
-            ].join('\n'),
-            { parse_mode: 'Markdown' },
-          );
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          await ctx.reply(`❌ Sell failed: ${message}`);
-        }
-      },
-    });
-
-    this.register({
-      command: 'risk',
-      description: 'Check risk score: /risk <mint>',
-      handler: async ({ ctx, args }) => {
-        const [mint] = args;
-        if (!mint) {
-          await ctx.reply('Usage: `/risk <tokenMint>`', { parse_mode: 'Markdown' });
-          return;
-        }
-
-        const cached = discoveryService.getToken(mint);
-        const assessment = riskService.assess({
-          mint,
-          symbol: cached?.symbol ?? 'UNKNOWN',
-          liquiditySol: cached?.initialLiquiditySol ?? 20.0,
-          top10HoldingPct: 25.0,
-          devHoldingPct: 5.0,
-          hasValidMetadata: true,
-          hasSocials: true,
-          suspectedSniperCount: 1,
-        });
-
-        const icon = assessment.passed ? '🟢' : '🔴';
         const text = [
-          `${icon} *Risk Assessment for ${cached?.symbol ?? 'Token'}*`,
-          `• Score: *${assessment.score} / 100* (${assessment.passed ? 'PASSED' : 'FLAGGED'})`,
-          `• Status: ${assessment.passed ? 'Safe to Paper Trade' : 'High Risk'}`,
-          assessment.reasons.length > 0
-            ? `• Flags:\n  - ${assessment.reasons.join('\n  - ')}`
-            : '• Flags: None detected',
+          `${icon} <b>System Health Report: ${health.status.toUpperCase()}</b>`,
+          '',
+          `⏱ <b>Uptime:</b> ${uptimeStr}`,
+          `🧠 <b>RAM Usage:</b> RSS: <b>${mem.rssMb} MB</b> | Heap: <b>${mem.heapUsedMb} MB / ${mem.heapTotalMb} MB</b>`,
+          `💻 <b>OS Memory Used:</b> ${mem.osUsedPercent}% (Free: ${mem.osFreeMb} MB)`,
+          `⚡ <b>Memory Constrained:</b> ${mem.isMemoryConstrained ? '⚠️ YES' : '✅ NO'}`,
+          '',
+          '<b>Subsystem Probes:</b>',
+          ...checkRows,
         ].join('\n');
 
-        await ctx.reply(text, { parse_mode: 'Markdown' });
-      },
-    });
-
-    this.register({
-      command: 'analyze',
-      description: 'Analyze token data: /analyze <mint>',
-      handler: async ({ ctx, args }) => {
-        const [mint] = args;
-        if (!mint) {
-          await ctx.reply('Usage: `/analyze <tokenMint>`\nExample: `/analyze 6EF8...`', {
-            parse_mode: 'Markdown',
-          });
-          return;
-        }
-
-        const cached = discoveryService.getToken(mint);
-        try {
-          const report = await tokenAnalysisService.analyzeToken(mint, {
-            creatorAddress: cached?.creator,
-            bondingCurveAddress: cached?.bondingCurve,
-            initialLiquiditySol: cached?.initialLiquiditySol,
-            isSynthetic: cached?.isSynthetic,
-          });
-
-          const fmt = (v: unknown) => (v === 'UNKNOWN' ? '_UNKNOWN_' : String(v));
-
-          const text = [
-            `🔍 *Token Analysis:* \`${mint.slice(0, 6)}...${mint.slice(-4)}\``,
-            '',
-            `📊 *Supply & Authorities:*`,
-            `• Supply: ${fmt(report.supply.supply.value)} (Decimals: ${fmt(report.supply.decimals.value)})`,
-            `• Mint Auth Revoked: ${fmt(report.authorities.isMintAuthorityRevoked.value)}`,
-            `• Freeze Auth Revoked: ${fmt(report.authorities.isFreezeAuthorityRevoked.value)}`,
-            '',
-            `👥 *Holders & Distribution:*`,
-            `• Top 10 Non-Curve: ${fmt(report.largestHolders.nonCurveTop10Percentage.value)}%`,
-            `• Bonding Curve: ${fmt(report.largestHolders.bondingCurvePercentage.value)}%`,
-            `• Concentration Risk: ${report.largestHolders.hasHighConcentration.value ? '⚠️ HIGH' : '✅ LOW'}`,
-            '',
-            `👨‍💻 *Creator Profile:*`,
-            `• Wallet Age: ${fmt(report.creatorHistory.walletAgeDays.value)} days`,
-            `• Reputation Tier: *${fmt(report.creatorHistory.reputationTier.value)}*`,
-            `• Creator Holdings: ${fmt(report.creatorHoldings.percentageOfSupply.value)}%`,
-            '',
-            `💧 *Liquidity & Depth:*`,
-            `• Liquidity: ${fmt(report.liquidityAndDepth.liquiditySol.value)} SOL`,
-            `• Est. Price: ${fmt(report.liquidityAndDepth.currentPriceSol.value)} SOL`,
-            `• Curve Progress: ${fmt(report.liquidityAndDepth.bondingCurveProgressPct.value)}%`,
-            '',
-            `🔗 *Connected Wallets:* ${fmt(report.relatedWallets.connectedWalletCount.value)} (Evidence-based)`,
-            `• Data Completeness: *${report.overallSummary.dataCompletenessPct}%*`,
-          ].join('\n');
-
-          await ctx.reply(text, { parse_mode: 'Markdown' });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          await ctx.reply(`❌ Analysis failed: ${message}`);
-        }
-      },
-    });
-
-    this.register({
-      command: 'reset_portfolio',
-      description: 'Reset simulated portfolio to 10 SOL',
-      handler: async ({ ctx }) => {
-        portfolioService.reset(10.0);
-        await ctx.reply('🔄 Simulated portfolio has been reset to *10.0 SOL*.', {
-          parse_mode: 'Markdown',
-        });
-      },
-    });
-
-    this.register({
-      command: 'creator',
-      description: 'Historical wallet analysis: /creator <address>',
-      handler: async ({ ctx, args }) => {
-        const [wallet] = args;
-        if (!wallet) {
-          await ctx.reply('Usage: `/creator <walletAddress>`\nExample: `/creator 6EF8...`', {
-            parse_mode: 'Markdown',
-          });
-          return;
-        }
-
-        try {
-          const profile = await walletHistoryService.analyzeWalletHistory(wallet);
-          const icon =
-            profile.riskLevel === 'SAFE'
-              ? '🟢'
-              : profile.riskLevel === 'LOW'
-                ? '🟡'
-                : profile.riskLevel === 'MEDIUM'
-                  ? '🟠'
-                  : profile.riskLevel === 'UNKNOWN'
-                    ? '⚪'
-                    : '🔴';
-
-          const text = [
-            `${icon} *Historical Wallet Analysis*`,
-            `• Address: \`${wallet.slice(0, 6)}...${wallet.slice(-4)}\``,
-            `• Risk Level: *${profile.riskLevel}* (Score: ${profile.riskScore}/100)`,
-            `• Coverage: *${profile.coverage.coverage}* (${profile.coverage.totalSignaturesObserved} txs)`,
-            `• Freshness: ${profile.isFresh ? 'FRESH (cached)' : 'LIVE'}`,
-            '',
-            `📊 *Observed Activity:*`,
-            `• Prior Launches: *${profile.launches.length}*`,
-            `• Large Transfers: *${profile.largeTransfers.length}*`,
-            `• Early Purchases / Snipes: *${profile.earlyPurchases.length}*`,
-            `• Repeated Relationships: *${profile.repeatedRelationships.length}*`,
-            '',
-            profile.warnings.length > 0
-              ? `⚠️ *Warnings (${profile.warnings.length}):*\n` +
-                profile.warnings.map((w) => `• [${w.code}] ${w.title}`).join('\n')
-              : '✅ *Warnings:* No suspicious historical patterns detected.',
-            '',
-            `ℹ️ _${profile.explanation}_`,
-          ].join('\n');
-
-          await ctx.reply(text, { parse_mode: 'Markdown' });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          await ctx.reply(`❌ Wallet analysis failed: ${message}`);
-        }
+        await replyHtml(text);
       },
     });
   }

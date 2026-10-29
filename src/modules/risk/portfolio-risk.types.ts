@@ -1,7 +1,4 @@
-import type {
-  MarketDataQuote,
-  SimulatedExecutionResult,
-} from '../execution/execution.types.js';
+import type { MarketDataQuote, SimulatedExecutionResult } from '../execution/execution.types.js';
 
 export interface PortfolioRiskConfig {
   /**
@@ -93,11 +90,7 @@ export const DEFAULT_PORTFOLIO_RISK_CONFIG: PortfolioRiskConfig = {
 };
 
 export type PauseTrigger =
-  | 'MANUAL'
-  | 'DAILY_LOSS'
-  | 'DRAWDOWN'
-  | 'EMERGENCY_EXIT'
-  | 'RECONCILIATION_BREACH';
+  'MANUAL' | 'DAILY_LOSS' | 'DRAWDOWN' | 'EMERGENCY_EXIT' | 'RECONCILIATION_BREACH';
 
 export interface TradingPauseDetails {
   isPaused: boolean;

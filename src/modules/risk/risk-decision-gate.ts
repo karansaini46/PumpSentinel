@@ -432,6 +432,16 @@ export class RiskDecisionGate {
     return [...(this.decisionHistory.get(mint) ?? [])];
   }
 
+  public getRecentRejections(limit = 10): RiskGateDecision[] {
+    const rejections: RiskGateDecision[] = [];
+    for (const d of this.activeDecisions.values()) {
+      if (d.outcome === 'REJECT' || !d.passed) {
+        rejections.push(d);
+      }
+    }
+    return rejections.slice(0, limit);
+  }
+
   public onDecisionCreated(handler: (decision: RiskGateDecision) => void): () => void {
     this.emitter.on('decisionCreated', handler);
     return () => this.emitter.off('decisionCreated', handler);

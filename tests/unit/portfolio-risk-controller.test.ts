@@ -402,11 +402,7 @@ describe('PortfolioRiskController - Independent Risk Controller', () => {
       expect(evalRes.triggerReason).toBe('STOP_LOSS_TRIGGERED');
 
       // Execute exit
-      const exitRes = await riskController.executeExit(
-        MINT_A,
-        crashedQuote,
-        evalRes.reasonMessage,
-      );
+      const exitRes = await riskController.executeExit(MINT_A, crashedQuote, evalRes.reasonMessage);
 
       expect(exitRes.status).toBe('FILLED');
       const executedTrade = exitRes.trade!;

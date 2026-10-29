@@ -261,6 +261,10 @@ export class DiscoveryService {
     return this.tokenCache.get(mint);
   }
 
+  public getCachedTokens(): DiscoveredToken[] {
+    return Array.from(this.tokenCache.values());
+  }
+
   public getCursor(): DiscoveryCursorRecord {
     return {
       id: 'pump_fun_cursor',

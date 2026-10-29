@@ -274,6 +274,21 @@ export class RiskDecisionGate {
     const existing = this.getLatestDecision(change.tokenMint);
     const now = change.detectedAt ?? new Date();
 
+    // Deduplication: Ignore identical duplicate market change events
+    if (
+      existing?.materialChanges.some(
+        (c) =>
+          c.changeId === change.changeId ||
+          (Boolean(change.signature) && Boolean(c.signature) && c.signature === change.signature),
+      )
+    ) {
+      logger.info(
+        { changeId: change.changeId, mint: change.tokenMint },
+        '[RiskDecisionGate] Duplicate material market change event ignored',
+      );
+      return existing;
+    }
+
     logger.warn(
       {
         mint: change.tokenMint,

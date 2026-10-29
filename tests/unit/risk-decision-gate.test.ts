@@ -816,4 +816,42 @@ describe('Central Risk-Decision Gate (Rules 1 - 10)', () => {
       expect(trade.isSimulated).toBe(true);
     });
   });
+
+  describe('Duplicate Events & Idempotency', () => {
+    it('handles duplicate evaluation events deterministically without outcome flapping', () => {
+      const report = createPassingAnalysisReport();
+      const dec1 = gate.evaluateGate({ mint: report.mint, symbol: 'SAFE', analysisReport: report });
+      const dec2 = gate.evaluateGate({ mint: report.mint, symbol: 'SAFE', analysisReport: report });
+
+      expect(dec1.outcome).toBe('ELIGIBLE_FOR_STRATEGY');
+      expect(dec2.outcome).toBe('ELIGIBLE_FOR_STRATEGY');
+      expect(dec1.passed).toBe(true);
+      expect(dec2.passed).toBe(true);
+    });
+
+    it('safely deduplicates identical material market change events with identical changeId', () => {
+      const report = createPassingAnalysisReport();
+      gate.evaluateGate({ mint: report.mint, symbol: 'SAFE', analysisReport: report });
+
+      const changePayload = {
+        changeId: 'dup_change_123',
+        tokenMint: report.mint,
+        changeType: 'LIQUIDITY_DROP' as const,
+        magnitudePct: 12.0,
+        previousValue: 30.0,
+        newValue: 26.4,
+        detectedAt: new Date(),
+        description: 'Moderate liquidity drop',
+        signature: 'tx_sig_dup_1',
+      };
+
+      const res1 = gate.notifyMaterialMarketChange(changePayload);
+      const res2 = gate.notifyMaterialMarketChange(changePayload); // Duplicate
+
+      expect(res1.outcome).toBe('NEEDS_RECHECK');
+      expect(res2.outcome).toBe('NEEDS_RECHECK');
+      expect(res2.materialChanges).toHaveLength(1); // Not duplicated
+      expect(gate.getDecisionHistory(report.mint)).toHaveLength(2); // Initial + 1 change, not duplicated
+    });
+  });
 });

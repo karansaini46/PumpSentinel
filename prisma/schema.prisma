@@ -1,0 +1,129 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Token {
+  mintAddress          String           @id
+  name                 String
+  symbol               String
+  uri                  String?
+  decimals             Int              @default(6)
+  creator              String
+  marketCapSol         Float?
+  priceSol             Float?
+  liquiditySol         Float?
+  bondingCurveProgress Float?
+  status               String           @default("DISCOVERED")
+  lifecycleState       String           @default("DISCOVERED_ON_CHAIN") // DISCOVERED_ON_CHAIN, METADATA_RETRIEVED, ELIGIBLE_FOR_RISK_ANALYSIS, INELIGIBLE
+  metadataStatus       String           @default("PENDING") // PENDING, RESOLVED, FAILED, MISSING
+  signature            String?
+  slot                 BigInt?
+  bondingCurveAddress  String?
+  source               String           @default("onchain")
+  isSynthetic          Boolean          @default(false)
+  discoveryLatencyMs   Float?
+  onChainTimestamp     DateTime?
+  discoveredAt         DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  riskAnalyses         RiskAnalysis[]
+  paperPositions       PaperPosition[]
+  paperTrades          PaperTrade[]
+
+  @@index([status])
+  @@index([discoveredAt])
+}
+
+model RiskAnalysis {
+  id              String   @id @default(uuid())
+  tokenMint       String
+  token           Token    @relation(fields: [tokenMint], references: [mintAddress], onDelete: Cascade)
+  score           Float
+  passed          Boolean
+  top10HoldingPct Float
+  devHoldingPct   Float
+  liquiditySol    Float
+  reasons         String[]
+  analyzedAt      DateTime @default(now())
+
+  @@index([tokenMint])
+  @@index([passed])
+}
+
+model PaperPosition {
+  id               String       @id @default(uuid())
+  tokenMint        String
+  tokenSymbol      String
+  token            Token        @relation(fields: [tokenMint], references: [mintAddress], onDelete: Cascade)
+  status           String       @default("OPEN") // OPEN, CLOSED
+  amountTokens     Float
+  entryPriceSol    Float
+  currentPriceSol  Float
+  solInvested      Float
+  realizedPnlSol   Float        @default(0.0)
+  unrealizedPnlSol Float        @default(0.0)
+  openedAt         DateTime     @default(now())
+  closedAt         DateTime?
+  updatedAt        DateTime     @updatedAt
+
+  trades           PaperTrade[]
+
+  @@index([tokenMint])
+  @@index([status])
+}
+
+model PaperTrade {
+  id              String         @id @default(uuid())
+  positionId      String?
+  position        PaperPosition? @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  tokenMint       String
+  token           Token          @relation(fields: [tokenMint], references: [mintAddress], onDelete: Cascade)
+  side            String         // BUY, SELL
+  amountTokens    Float
+  priceSol        Float
+  totalSol        Float
+  simulatedFeeSol Float
+  slippageBps     Int
+  reason          String
+  executedAt      DateTime       @default(now())
+
+  @@index([tokenMint])
+  @@index([side])
+  @@index([executedAt])
+}
+
+model PortfolioAccount {
+  id                  String   @id @default("default")
+  simulatedSolBalance Float
+  initialSolBalance   Float
+  totalRealizedPnlSol Float    @default(0.0)
+  winCount            Int      @default(0)
+  lossCount           Int      @default(0)
+  updatedAt           DateTime @updatedAt
+}
+
+model SentinelEventLog {
+  id        String   @id @default(uuid())
+  category  String
+  level     String   @default("INFO")
+  message   String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([category])
+  @@index([level])
+  @@index([createdAt])
+}
+
+model DiscoveryCursor {
+  id              String   @id @default("pump_fun_cursor")
+  lastSlot        BigInt   @default(0)
+  lastSignature   String?
+  lastProcessedAt DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}

@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pumpsentinel-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pumpsentinel
+      POSTGRES_PASSWORD: sentinel_secret
+      POSTGRES_DB: pumpsentinel
+    ports:
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pumpsentinel -d pumpsentinel"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    # Memory and connection optimization for 8 GB RAM laptop environment
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c max_connections=50
+      -c work_mem=4MB
+      -c effective_cache_size=256MB
+
+volumes:
+  postgres_data:
+    driver: local

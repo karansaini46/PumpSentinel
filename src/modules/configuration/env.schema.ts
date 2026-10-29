@@ -78,6 +78,12 @@ export const EnvSchema = z
 
     ANALYSIS_MAX_CONCURRENCY: z.coerce.number().int().positive().default(3),
     ANALYSIS_RPC_BUDGET_PER_TOKEN: z.coerce.number().int().positive().default(8),
+
+    NOTIF_QUIET_HOURS_ENABLED: z.coerce.boolean().default(false),
+    NOTIF_QUIET_HOURS_START_UTC: z.coerce.number().int().min(0).max(23).default(22),
+    NOTIF_QUIET_HOURS_END_UTC: z.coerce.number().int().min(0).max(23).default(7),
+    NOTIF_BATCH_INTERVAL_MS: z.coerce.number().positive().default(30000),
+    NOTIF_BATCH_MAX_ITEMS: z.coerce.number().positive().default(5),
   })
   .superRefine((_data, ctx) => {
     // Explicit safety invariant: Guard against accidental real wallet / private key injection

@@ -5,6 +5,7 @@ import { prismaService } from './modules/persistence/index.js';
 import { ingestionStreamService } from './modules/ingestion/index.js';
 import { discoveryService } from './modules/discovery/index.js';
 import { riskService, portfolioRiskController } from './modules/risk/index.js';
+import { portfolioService } from './modules/portfolio/index.js';
 import { notificationsService } from './modules/notifications/index.js';
 import { telegramBotService } from './modules/telegram/index.js';
 import { tokenAnalysisService } from './modules/analysis/index.js';
@@ -73,18 +74,25 @@ async function bootstrap(): Promise<void> {
     }
   });
 
-  // Stage 1: Discovered On-Chain
+  // Stage 1: Discovered On-Chain (Event 1: Newly Discovered Tokens)
   discoveryService.onTokenDiscoveredOnChain(async (token) => {
-    const label = token.isSynthetic ? '[SYNTHETIC]' : '[ON-CHAIN]';
-    await notificationsService.notify(
-      'TOKEN_DISCOVERY',
-      `${label} Discovered: ${token.symbol}`,
-      `• Mint: \`${token.mint}\`\n• Creator: \`${token.creator}\`\n• Slot: ${token.slot}\n• Latency: ${token.discoveryLatencyMs}ms\n• Source: ${token.source}`,
-      'LOW',
-    );
+    await notificationsService.notifyTokenDiscovered({
+      mint: token.mint,
+      symbol: token.symbol,
+      name: token.name,
+      discoveryTimestamp: token.discoveredAt,
+      creator: token.creator,
+      liquiditySol: token.initialLiquiditySol,
+      dataFreshnessMs: token.discoveryLatencyMs,
+      decision: 'DISCOVERED',
+      decisionReason: `Discovered on-chain at slot ${token.slot}`,
+      marketDataSource: token.source,
+      isSynthetic: token.isSynthetic,
+      slot: token.slot,
+    });
   });
 
-  // Stage 3: Eligible for Risk Analysis
+  // Stage 3: Eligible for Risk Analysis (Events 2 & 3: Risk Rejection & Strategy Eligible)
   discoveryService.onTokenEligibleForRisk(async (token, meta) => {
     try {
       const analysisReport = await tokenAnalysisService.analyzeToken(token.mint, {
@@ -148,8 +156,101 @@ async function bootstrap(): Promise<void> {
         },
         '[DiscoveryService] Token analyzed, assessed for risk & gate evaluated',
       );
+
+      // Event 2: Risk Rejection alert
+      if (gateDecision.outcome === 'REJECT') {
+        await notificationsService.notifyRiskRejected({
+          mint: token.mint,
+          symbol: token.symbol,
+          name: token.name,
+          discoveryTimestamp: token.discoveredAt,
+          creator: token.creator,
+          liquiditySol: token.initialLiquiditySol,
+          dataFreshnessMs: token.discoveryLatencyMs,
+          riskScore: comprehensiveReport.overallScore,
+          riskSummary: comprehensiveReport.summary,
+          decision: 'REJECT',
+          decisionReason: gateDecision.reasons.join('; ') || 'Risk gate rejected token',
+          marketDataSource: token.source,
+          isSynthetic: token.isSynthetic,
+          slot: token.slot,
+        });
+      } else if (gateDecision.outcome === 'ELIGIBLE_FOR_STRATEGY') {
+        // Event 3: Strategy Eligible alert
+        await notificationsService.notifyStrategyEligible({
+          mint: token.mint,
+          symbol: token.symbol,
+          name: token.name,
+          discoveryTimestamp: token.discoveredAt,
+          creator: token.creator,
+          liquiditySol: token.initialLiquiditySol,
+          dataFreshnessMs: token.discoveryLatencyMs,
+          riskScore: comprehensiveReport.overallScore,
+          riskSummary: comprehensiveReport.summary,
+          decision: 'ELIGIBLE_FOR_STRATEGY',
+          decisionReason: 'Passed all deterministic safety and liquidity requirements',
+          marketDataSource: token.source,
+          isSynthetic: token.isSynthetic,
+          slot: token.slot,
+        });
+      }
     } catch (err) {
       logger.warn({ mint: token.mint, err }, '[DiscoveryService] Error analyzing token for risk');
+    }
+  });
+
+  // Events 4, 5, 6, 7, 8: Simulated Trades (Buy, Sell, Stop-Loss, Take-Profit, Emergency Exit)
+  portfolioService.onTrade(async (trade, position, pnlSol) => {
+    if (trade.side === 'BUY') {
+      await notificationsService.notifySimulatedBuy({
+        tradeId: trade.tradeId,
+        tokenMint: trade.tokenMint,
+        tokenSymbol: trade.tokenSymbol,
+        side: 'BUY',
+        stage: 'FILLED',
+        executedPriceSol: trade.executedPriceSol,
+        amountTokens: trade.amountTokens,
+        totalSol: trade.totalSol,
+        simulatedFeeSol: trade.simulatedFeeSol,
+        slippageBps: trade.slippageBpsApplied,
+        unrealizedPnlSol: 0,
+        unrealizedPnlPct: 0,
+        executedAt: trade.executedAt,
+      });
+    } else {
+      const reasonLower = (trade.reason ?? '').toLowerCase();
+      const pnlPct =
+        position && position.solInvested > 0 && pnlSol !== undefined
+          ? (pnlSol / position.solInvested) * 100
+          : undefined;
+
+      const tradePayload = {
+        tradeId: trade.tradeId,
+        tokenMint: trade.tokenMint,
+        tokenSymbol: trade.tokenSymbol,
+        side: 'SELL' as const,
+        stage: 'FILLED' as const,
+        entryPriceSol: position?.entryPriceSol,
+        executedPriceSol: trade.executedPriceSol,
+        amountTokens: trade.amountTokens,
+        totalSol: trade.totalSol,
+        simulatedFeeSol: trade.simulatedFeeSol,
+        slippageBps: trade.slippageBpsApplied,
+        realizedPnlSol: pnlSol,
+        realizedPnlPct: pnlPct,
+        exitReason: trade.reason,
+        executedAt: trade.executedAt,
+      };
+
+      if (reasonLower.includes('emergency') || reasonLower.includes('exit_pending')) {
+        await notificationsService.notifyEmergencyExit(tradePayload);
+      } else if (reasonLower.includes('stop-loss') || reasonLower.includes('stop loss')) {
+        await notificationsService.notifyStopLossTriggered(tradePayload);
+      } else if (reasonLower.includes('take-profit') || reasonLower.includes('take profit')) {
+        await notificationsService.notifyTakeProfitTriggered(tradePayload);
+      } else {
+        await notificationsService.notifySimulatedSell(tradePayload);
+      }
     }
   });
 

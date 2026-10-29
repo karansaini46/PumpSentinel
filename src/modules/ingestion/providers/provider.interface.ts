@@ -32,4 +32,5 @@ export interface ISolanaDataProvider {
 
   onTokenCreated(handler: (event: IngestionTokenCreatedEvent) => void | Promise<void>): () => void;
   onTrade(handler: (event: IngestionTradeEvent) => void | Promise<void>): () => void;
+  onStatusChange?(handler: (status: ProviderStatus) => void): () => void;
 }

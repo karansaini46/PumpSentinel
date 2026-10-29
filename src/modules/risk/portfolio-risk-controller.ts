@@ -236,6 +236,20 @@ export class PortfolioRiskController {
         `Daily simulated loss limit exceeded: ${dailyLossPct.toFixed(2)}% >= ${this.config.maxDailyLossPct.toFixed(2)}% (Loss: ${dailyLossSol.toFixed(4)} SOL)`,
         'DAILY_LOSS',
       );
+      void this.notifications.notifyDailyLossLimitTriggered({
+        type: 'DAILY_LOSS_LIMIT',
+        title: `Daily loss limit breached: ${dailyLossPct.toFixed(2)}% >= ${this.config.maxDailyLossPct.toFixed(2)}%`,
+        details: `Simulated daily loss breached max limit. Loss: ${dailyLossSol.toFixed(4)} SOL (${dailyLossPct.toFixed(2)}%). Starting Equity: ${this.dailyStartingEquitySol.toFixed(4)} SOL, Current Equity: ${totalEquitySol.toFixed(4)} SOL. Trading pause engaged.`,
+        subsystem: 'PortfolioRiskController',
+        metrics: {
+          dailyLossPct: dailyLossPct.toFixed(2),
+          dailyLossSol: dailyLossSol.toFixed(4),
+          startingEquitySol: this.dailyStartingEquitySol.toFixed(4),
+          currentEquitySol: totalEquitySol.toFixed(4),
+          maxLimitPct: this.config.maxDailyLossPct,
+        },
+        timestamp: now,
+      });
     }
 
     return {
@@ -622,6 +636,21 @@ export class PortfolioRiskController {
         currentQuote.liquiditySol < this.executionEngine.getConfig().minPoolLiquiditySol;
 
       if (isQuoteStale || isPriceInvalid || isLiquidityExhausted) {
+        if (isQuoteStale) {
+          void this.notifications.notifyStaleMarketData({
+            type: 'STALE_MARKET_DATA',
+            title: `Stale Market Data for Token ${pos.tokenSymbol}`,
+            details: `Market quote is stale (age: ${evalTime - quoteTime}ms > 60,000ms max allowed). Exit delayed until fresh quote is observed.`,
+            subsystem: 'PortfolioRiskController',
+            metrics: {
+              tokenMint: pos.tokenMint,
+              tokenSymbol: pos.tokenSymbol,
+              quoteAgeMs: evalTime - quoteTime,
+            },
+            timestamp: new Date(),
+          });
+        }
+
         const failureReason = isQuoteStale
           ? `Market quote is stale (age: ${evalTime - quoteTime}ms)`
           : isPriceInvalid
@@ -723,10 +752,11 @@ export class PortfolioRiskController {
     );
 
     // Operator Alert
-    await this.notifications.notify(
-      'PORTFOLIO_RISK',
-      `🚨 EMERGENCY EXIT FAILED: Position marked EXIT_PENDING (${pos.tokenSymbol})`,
-      `Cannot simulate realistic exit for position ${pos.tokenSymbol} (${pos.tokenMint}).\n` +
+    await this.notifications.notifyEmergencyExit({
+      type: 'EMERGENCY_EXIT',
+      title: `EMERGENCY EXIT FAILED: Position marked EXIT_PENDING (${pos.tokenSymbol})`,
+      details:
+        `Cannot simulate realistic exit for position ${pos.tokenSymbol} (${pos.tokenMint}).\n` +
         `• Status: EXIT_PENDING\n` +
         `• Tokens: ${pos.amountTokens.toLocaleString()}\n` +
         `• Attempted Reason: ${reason}\n` +
@@ -734,8 +764,22 @@ export class PortfolioRiskController {
         `• Attempts: ${exitPending.failedAttempts}\n` +
         `• Pool Liquidity: ${quote?.liquiditySol?.toFixed(2) ?? 'N/A'} SOL\n` +
         `• Operator Action Required: Inspect liquidity or execute manual intervention.`,
+      subsystem: 'PortfolioRiskController',
+      timestamp: new Date(),
+    });
+
+    void this.notifications.notify(
+      'PORTFOLIO_RISK',
+      `EMERGENCY EXIT FAILED: Position marked EXIT_PENDING (${pos.tokenSymbol})`,
+      `Cannot simulate realistic exit for position ${pos.tokenSymbol} (${pos.tokenMint}). Reason: ${failureReason}. Pool liquidity: ${quote?.liquiditySol?.toFixed(2) ?? 'N/A'} SOL. Immediate operator attention required.`,
       'HIGH',
-      { tokenMint: pos.tokenMint, exitPending },
+      {
+        tokenMint: pos.tokenMint,
+        tokenSymbol: pos.tokenSymbol,
+        status: 'EXIT_PENDING',
+        failureReason,
+        failedAttempts: exitPending.failedAttempts,
+      },
     );
 
     return {
@@ -1080,13 +1124,19 @@ export class PortfolioRiskController {
         '[PortfolioRiskController] Reconciliation detected and resolved state discrepancies',
       );
 
-      void this.notifications.notify(
-        'PORTFOLIO_RISK',
-        `⚠️ RECONCILIATION AUDIT: ${inconsistencies.length} Discrepancies Detected & Repaired`,
-        `Reconciliation completed.\n• Status: ${status}\n• Inconsistencies detected: ${inconsistencies.length}\n• Repaired issues: ${repairedIssues.join('; ')}\n• Reconciled Cash: ${result.cashAudit.reconciledBalanceSol} SOL`,
-        'MEDIUM',
-        { result },
-      );
+      void this.notifications.notifyReconciliationError({
+        type: 'RECONCILIATION_ERROR',
+        title: `Paper-trading reconciliation discrepancies detected: ${status}`,
+        details: `Reconciliation audit detected ${inconsistencies.length} discrepancy(s). Status: ${status}. Repaired issues: ${repairedIssues.join('; ') || 'None'}. Reconciled Cash: ${result.cashAudit.reconciledBalanceSol} SOL.`,
+        subsystem: 'PortfolioRiskController',
+        metrics: {
+          status,
+          inconsistenciesCount: inconsistencies.length,
+          repairedCount: repairedIssues.length,
+          reconciledCashSol: result.cashAudit.reconciledBalanceSol,
+        },
+        timestamp,
+      });
     } else {
       logger.info(
         { reconciledCash: result.cashAudit.reconciledBalanceSol },

@@ -4,6 +4,7 @@ import type { IngestionEvent, IngestionMetrics } from './ingestion.types.js';
 import type { ISolanaDataProvider, ProviderHealthReport } from './providers/provider.interface.js';
 import { HeliusSolanaProvider } from './providers/helius-provider.js';
 import { configService } from '../configuration/config.service.js';
+import { notificationsService } from '../notifications/notifications.service.js';
 import { logger } from '../observability/logger.js';
 
 export class IngestionStreamService implements IIngestionService {
@@ -11,6 +12,7 @@ export class IngestionStreamService implements IIngestionService {
   private provider: ISolanaDataProvider | null = null;
   private unsubscribeTokenCreated: (() => void) | null = null;
   private unsubscribeTrade: (() => void) | null = null;
+  private unsubscribeStatusChange: (() => void) | null = null;
   private isRunning = false;
 
   constructor(customProvider?: ISolanaDataProvider) {
@@ -27,6 +29,7 @@ export class IngestionStreamService implements IIngestionService {
     if (this.provider) {
       this.unsubscribeTokenCreated?.();
       this.unsubscribeTrade?.();
+      this.unsubscribeStatusChange?.();
     }
 
     this.provider = provider;
@@ -42,6 +45,26 @@ export class IngestionStreamService implements IIngestionService {
     this.unsubscribeTrade = this.provider.onTrade((event) => {
       this.dispatch(event);
     });
+
+    if (this.provider.onStatusChange) {
+      this.unsubscribeStatusChange = this.provider.onStatusChange(async (status) => {
+        this.emitter.emit('statusChange', status, this.provider);
+        if (status === 'DISCONNECTED' || status === 'ERROR' || status === 'RECONNECTING') {
+          void notificationsService.notifyProviderOutage({
+            type: 'PROVIDER_OUTAGE',
+            title: `Data Provider Outage: ${this.provider?.name ?? 'Provider'} is ${status}`,
+            details: `Provider ${this.provider?.name} (${this.provider?.source}) transitioned to status: ${status}.`,
+            subsystem: this.provider?.name ?? 'ISolanaDataProvider',
+            metrics: {
+              status,
+              reconnectCount: this.provider?.getHealth().reconnectCount,
+              eventsProcessed: this.provider?.getHealth().eventsProcessed,
+            },
+            timestamp: new Date(),
+          });
+        }
+      });
+    }
   }
 
   public getProvider(): ISolanaDataProvider {

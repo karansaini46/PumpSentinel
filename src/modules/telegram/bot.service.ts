@@ -315,11 +315,21 @@ export class TelegramBotService implements INotificationChannel {
     const authorizedUsers = configService.get('TELEGRAM_AUTHORIZED_USER_IDS');
     if (authorizedUsers.length === 0) return;
 
-    const rawText = [
-      `🔔 <b>[${notification.priority}] ${notification.title}</b>`,
-      '',
-      notification.message,
-    ].join('\n');
+    const hasHeader =
+      notification.message.includes('<b>') &&
+      (notification.message.includes('[PAPER') ||
+        notification.message.includes('[CRITICAL') ||
+        notification.message.includes('[HIGH') ||
+        notification.message.includes('[MEDIUM') ||
+        notification.message.includes('[LOW'));
+
+    const rawText = hasHeader
+      ? notification.message
+      : [
+          `🔔 <b>[${notification.priority}] ${notification.title}</b>`,
+          '',
+          notification.message,
+        ].join('\n');
 
     const sanitizedText = sanitizeSecrets(rawText);
     const chunks = chunkMessage(sanitizedText, 4000);

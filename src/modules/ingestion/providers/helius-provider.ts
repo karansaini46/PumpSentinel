@@ -76,6 +76,7 @@ export class HeliusSolanaProvider implements ISolanaDataProvider {
             ? 'RECONNECTING'
             : 'DISCONNECTED';
       logger.info({ status: this.status }, '[HeliusProvider] Connection status changed');
+      this.emitter.emit('statusChange', this.status);
     });
 
     this.wsConnection.on(
@@ -241,6 +242,13 @@ export class HeliusSolanaProvider implements ISolanaDataProvider {
     this.emitter.on('trade', handler);
     return () => {
       this.emitter.off('trade', handler);
+    };
+  }
+
+  public onStatusChange(handler: (status: ProviderStatus) => void): () => void {
+    this.emitter.on('statusChange', handler);
+    return () => {
+      this.emitter.off('statusChange', handler);
     };
   }
 }

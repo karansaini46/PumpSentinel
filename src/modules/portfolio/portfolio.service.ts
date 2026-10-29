@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import type {
   PortfolioConfig,
   PositionDetails,
@@ -51,6 +52,7 @@ export class PortfolioService {
   private processedFillIds = new Set<string>();
   private pendingOrders = new Map<string, SimulatedOrderRequest>(); // Client order id tracking
   private repository: PaperTradingRepository;
+  private emitter = new EventEmitter();
 
   constructor(
     configOrInitialSol?: Partial<PortfolioConfig> | number,
@@ -138,6 +140,13 @@ export class PortfolioService {
       },
       '[PortfolioService] Portfolio reset to starting virtual balance',
     );
+  }
+
+  public onTrade(
+    handler: (trade: SimulatedExecutionResult, position?: PositionDetails, pnlSol?: number) => void,
+  ): () => void {
+    this.emitter.on('trade', handler);
+    return () => this.emitter.off('trade', handler);
   }
 
   public getSolBalance(): number {
@@ -296,6 +305,8 @@ export class PortfolioService {
         winCount: this.winCount,
         lossCount: this.lossCount,
       });
+
+      this.emitter.emit('trade', trade, newPosition, 0);
     } else {
       // SELL trade
       const existing = this.openPositions.get(trade.tokenMint);
@@ -363,6 +374,8 @@ export class PortfolioService {
         winCount: this.winCount,
         lossCount: this.lossCount,
       });
+
+      this.emitter.emit('trade', trade, existing, tradePnlSol);
     }
   }
 

@@ -201,6 +201,31 @@ export class CommandRegistry {
           const symbol = cachedToken?.symbol ?? 'TOKEN';
           const mockPrice = 0.00005; // Fallback mock price
 
+          // Rule Invariant: Token must pass Risk Gate before purchase
+          const riskDecision = riskService.evaluateGate({
+            mint,
+            symbol,
+            customLiquiditySol: cachedToken?.initialLiquiditySol ?? 25.0,
+          });
+
+          if (riskDecision.outcome !== 'ELIGIBLE_FOR_STRATEGY') {
+            await ctx.reply(
+              `❌ *Risk Gate Rejection*\n• Outcome: *${riskDecision.outcome}*\n• Reasons:\n${riskDecision.reasons.map((r) => `  - ${r}`).join('\n')}`,
+              { parse_mode: 'Markdown' },
+            );
+            return;
+          }
+
+          const strategySignal = {
+            action: 'BUY' as const,
+            tokenMint: mint,
+            tokenSymbol: symbol,
+            sizeSol: solAmount,
+            confidence: 0.9,
+            reason: 'Manual Telegram /buy command authorized',
+            timestamp: new Date(),
+          };
+
           const trade = paperExecutionEngine.executeSimulatedOrder({
             tokenMint: mint,
             tokenSymbol: symbol,
@@ -208,6 +233,8 @@ export class CommandRegistry {
             solAmount,
             currentPriceSol: mockPrice,
             reason: 'Manual Telegram command /buy',
+            riskDecision,
+            strategySignal,
           });
 
           portfolioService.recordTrade(trade);

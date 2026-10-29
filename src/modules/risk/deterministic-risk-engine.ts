@@ -323,7 +323,7 @@ export class DeterministicRiskEngine {
   // -------------------------------------------------------------------------
   private checkCreatorBehavior(input: ComprehensiveRiskInput): RiskCheckResult {
     if (input.analysisReport?.creatorHoldings) {
-      const holdingStatus = input.analysisReport.creatorHoldings.holdingStatus.value;
+      const holdingStatus = input.analysisReport.creatorHoldings.holdingStatus?.value;
       if (holdingStatus === 'DUMPED_ALL') {
         return {
           category: 'CREATOR_BEHAVIOR',
@@ -375,6 +375,22 @@ export class DeterministicRiskEngine {
   private checkPreviousHarmfulLaunches(input: ComprehensiveRiskInput): RiskCheckResult {
     const profile = input.creatorHistory;
     if (!profile) {
+      const reportRugCount = input.analysisReport?.creatorHistory?.rugPullCount?.value;
+      if (typeof reportRugCount === 'number' && reportRugCount > 0) {
+        return {
+          category: 'PREVIOUS_HARMFUL_LAUNCHES',
+          status: 'FAIL',
+          reasonCode: 'PREVIOUS_HARMFUL_LAUNCHES_FAIL',
+          evidence: {
+            metrics: { confirmedRugCount: reportRugCount },
+            explanation: `Creator is tied to ${reportRugCount} confirmed historical rug pull(s).`,
+          },
+          source: 'deterministic_engine:previousLaunches',
+          observedAt: new Date(),
+          confidence: 'HIGH',
+        };
+      }
+
       return {
         category: 'PREVIOUS_HARMFUL_LAUNCHES',
         status: 'UNKNOWN',
@@ -447,11 +463,11 @@ export class DeterministicRiskEngine {
     if (typeof input.customLiquiditySol === 'number') {
       liquiditySol = input.customLiquiditySol;
     } else if (input.analysisReport?.liquidityAndDepth) {
-      const val = input.analysisReport.liquidityAndDepth.liquiditySol.value;
+      const val = input.analysisReport.liquidityAndDepth.liquiditySol?.value;
       if (typeof val === 'number') {
         liquiditySol = val;
       }
-      const depth = input.analysisReport.liquidityAndDepth.marketDepth.value;
+      const depth = input.analysisReport.liquidityAndDepth.marketDepth?.value;
       if (Array.isArray(depth)) {
         const bucket = depth.find((b) => b.orderSolAmount === 1.0);
         if (bucket) sellPriceImpact1Sol = bucket.estimatedPriceImpactPct;
@@ -723,8 +739,8 @@ export class DeterministicRiskEngine {
 
     if (vol) {
       const totalVol =
-        typeof vol.totalVolumeSol.value === 'number' ? vol.totalVolumeSol.value : null;
-      const trades = typeof vol.tradeCount.value === 'number' ? vol.tradeCount.value : null;
+        typeof vol.totalVolumeSol?.value === 'number' ? vol.totalVolumeSol.value : null;
+      const trades = typeof vol.tradeCount?.value === 'number' ? vol.tradeCount.value : null;
 
       // Anomaly: high trade count with zero volume, or extreme volume discrepancy
       if (trades !== null && trades > 100 && totalVol !== null && totalVol < 0.01) {

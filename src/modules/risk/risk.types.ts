@@ -144,3 +144,113 @@ export interface RiskAssessmentResult {
   reasons: string[];
   assessedAt: Date;
 }
+
+// ---------------------------------------------------------------------------
+// Central Risk-Decision Gate Types (Rules 1 - 10 & Invariant)
+// ---------------------------------------------------------------------------
+
+export type RiskGateOutcome = 'REJECT' | 'NEEDS_RECHECK' | 'ELIGIBLE_FOR_STRATEGY';
+
+export type MaterialMarketChangeType =
+  | 'LIQUIDITY_DROP'
+  | 'LARGE_SELL_TRANSACTION'
+  | 'AUTHORITY_MUTATION'
+  | 'HOLDER_CONCENTRATION_INCREASE'
+  | 'PRICE_VOLATILITY_SPIKE'
+  | 'SUSPICIOUS_TRANSFER_CLUSTER';
+
+export interface MaterialMarketChange {
+  changeId: string;
+  tokenMint: string;
+  changeType: MaterialMarketChangeType;
+  magnitudePct?: number;
+  previousValue?: number | string | boolean | null;
+  newValue?: number | string | boolean | null;
+  detectedAt: Date;
+  description: string;
+  signature?: string;
+}
+
+export type RiskGateReasonCode =
+  | 'GATE_ELIGIBLE'
+  | 'REJECT_CRITICAL_FAIL'
+  | 'REJECT_INSUFFICIENT_LIQUIDITY'
+  | 'REJECT_CREATOR_CONCENTRATION_EXCEEDED'
+  | 'REJECT_TOP_HOLDERS_CONCENTRATION_EXCEEDED'
+  | 'REJECT_BUNDLED_PURCHASES_EXCEEDED'
+  | 'REJECT_PREVIOUS_HARMFUL_LAUNCHES'
+  | 'REJECT_CREATOR_SUSPICIOUS_BEHAVIOR'
+  | 'REJECT_AUTHORITY_NOT_REVOKED'
+  | 'REJECT_MISSING_CRITICAL_EVIDENCE'
+  | 'REJECT_CATASTROPHIC_MARKET_CHANGE'
+  | 'RECHECK_STALE_CRITICAL_DATA'
+  | 'RECHECK_CONFLICTING_EVIDENCE'
+  | 'RECHECK_MATERIAL_MARKET_CHANGE'
+  | 'RECHECK_EXPIRED_DECISION'
+  | 'RECHECK_PROBABILISTIC_BUNDLE_UNCONFIRMED'
+  | 'RECHECK_PRICE_VOLUME_ANOMALY';
+
+export interface RiskGateConfig {
+  creatorHoldingsThresholdPct: number; // default: 10.0%
+  suspectedBundleThresholdPct: number; // default: 25.0%
+  minLiquiditySol: number; // default: 15.0 SOL
+  maxTop10ConcentrationPct: number; // default: 30.0%
+  maxSellPriceImpactPct: number; // default: 20.0%
+  requireRevokedMintAuthority: boolean; // default: true
+  requireRevokedFreezeAuthority: boolean; // default: true
+  minDataCompletenessPct: number; // default: 75.0%
+  maxDataAgeMs: number; // default: 60_000ms (stale if older)
+  decisionTtlMs: number; // default: 300_000ms (5 mins validity)
+  materialLiquidityDropPct: number; // default: 10.0%
+  materialLargeSellPct: number; // default: 5.0%
+  allowProbabilisticBundles: boolean; // default: false
+}
+
+export interface RiskGateDecision {
+  decisionId: string;
+  decisionVersion: string; // e.g. '1.0.0'
+  tokenMint: string;
+  tokenSymbol: string;
+  outcome: RiskGateOutcome;
+  passed: boolean; // true if and only if outcome === 'ELIGIBLE_FOR_STRATEGY'
+  reasons: string[];
+  reasonCodes: RiskGateReasonCode[];
+  criticalFails: string[];
+  recheckReasons: string[];
+  evidence: Record<string, unknown>;
+  evaluatedAt: Date;
+  expiresAt: Date;
+  isExpired: boolean;
+  materialChanges: MaterialMarketChange[];
+  configSnapshot: Readonly<RiskGateConfig>;
+}
+
+export interface GateEvaluationInput {
+  mint: string;
+  symbol: string;
+  riskReport?: TokenRiskReport;
+  comprehensiveInput?: ComprehensiveRiskInput;
+  analysisReport?: TokenAnalysisReport;
+  rawHolders?: Array<{
+    ownerAddress: string;
+    tokenAccountAddress?: string;
+    balance: number;
+    isCreator?: boolean;
+    isBondingCurve?: boolean;
+  }>;
+  customLiquiditySol?: number;
+  customCreatorHoldingPct?: number;
+  customTop10HoldingPct?: number;
+  evaluatedAt?: Date;
+}
+
+export class RiskGateInvariantViolationError extends Error {
+  public readonly details?: Record<string, unknown>;
+
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = 'RiskGateInvariantViolationError';
+    this.details = details;
+    Object.setPrototypeOf(this, RiskGateInvariantViolationError.prototype);
+  }
+}

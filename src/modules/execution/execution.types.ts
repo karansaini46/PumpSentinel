@@ -1,3 +1,6 @@
+import type { RiskGateDecision } from '../risk/risk.types.js';
+import type { StrategySignal } from '../strategy/strategy.types.js';
+
 export type SimulatedTradeSide = 'BUY' | 'SELL';
 
 export interface SimulatedOrderRequest {
@@ -9,6 +12,9 @@ export interface SimulatedOrderRequest {
   currentPriceSol: number;
   maxSlippageBps?: number;
   reason: string;
+  riskDecision?: RiskGateDecision;
+  strategySignal?: StrategySignal;
+  bypassRiskGateForTestingOnly?: boolean;
 }
 
 export interface SimulatedExecutionResult {

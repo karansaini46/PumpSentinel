@@ -15,6 +15,7 @@ describe('Paper Execution Module', () => {
       solAmount: 1.0,
       currentPriceSol: 0.001,
       reason: 'Test BUY order',
+      bypassRiskGateForTestingOnly: true,
     });
 
     expect(trade.isSimulated).toBe(true);

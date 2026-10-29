@@ -4,14 +4,23 @@ import type {
   RiskAssessmentResult,
   ComprehensiveRiskInput,
   TokenRiskReport,
+  GateEvaluationInput,
+  RiskGateDecision,
+  RiskGateConfig,
 } from './risk.types.js';
 import { deterministicRiskEngine, DeterministicRiskEngine } from './deterministic-risk-engine.js';
+import { riskDecisionGate, RiskDecisionGate } from './risk-decision-gate.js';
 
 export class RiskService {
   private config: RiskRuleConfig;
   private deterministicEngine: DeterministicRiskEngine;
+  private decisionGate: RiskDecisionGate;
 
-  constructor(customConfig?: Partial<RiskRuleConfig>, customEngine?: DeterministicRiskEngine) {
+  constructor(
+    customConfig?: Partial<RiskRuleConfig>,
+    customEngine?: DeterministicRiskEngine,
+    customGate?: RiskDecisionGate,
+  ) {
     this.config = {
       maxTop10HoldingPct: customConfig?.maxTop10HoldingPct ?? 30.0,
       maxDevHoldingPct: customConfig?.maxDevHoldingPct ?? 10.0,
@@ -20,6 +29,22 @@ export class RiskService {
       requireSocials: customConfig?.requireSocials ?? false,
     };
     this.deterministicEngine = customEngine ?? deterministicRiskEngine;
+    this.decisionGate = customGate ?? riskDecisionGate;
+  }
+
+  /**
+   * Central Risk-Decision Gate: Combines individual risk checks into a final
+   * eligibility decision (REJECT, NEEDS_RECHECK, ELIGIBLE_FOR_STRATEGY).
+   */
+  public evaluateGate(
+    input: GateEvaluationInput,
+    options?: { configOverrides?: Partial<RiskGateConfig> },
+  ): RiskGateDecision {
+    return this.decisionGate.evaluateGate(input, options);
+  }
+
+  public getGate(): RiskDecisionGate {
+    return this.decisionGate;
   }
 
   /**

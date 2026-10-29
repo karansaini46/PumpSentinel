@@ -6,6 +6,8 @@ import type {
   PaperExecutionConfig,
 } from './execution.types.js';
 import { logger } from '../observability/logger.js';
+import { riskDecisionGate } from '../risk/risk-decision-gate.js';
+import { RiskGateInvariantViolationError } from '../risk/risk.types.js';
 
 export class PaperExecutionEngine {
   private emitter = new EventEmitter();
@@ -44,7 +46,9 @@ export class PaperExecutionEngine {
   }
 
   /**
-   * Execute a simulated trade strictly in paper-trading mode
+   * Execute a simulated trade strictly in paper-trading mode.
+   * FINAL INVARIANT: No token can be purchased by the paper-trading engine unless
+   * it has passed the required risk gate and the entry strategy.
    */
   public executeSimulatedOrder(request: SimulatedOrderRequest): SimulatedExecutionResult {
     this.assertSimulationInvariants();
@@ -60,6 +64,24 @@ export class PaperExecutionEngine {
       if (!request.solAmount || request.solAmount <= 0) {
         throw new Error('solAmount must be positive for BUY orders');
       }
+
+      // FINAL INVARIANT ENFORCEMENT
+      if (!request.bypassRiskGateForTestingOnly) {
+        // 1. Verify Risk Gate Eligibility
+        riskDecisionGate.assertEligibleForPurchase(request.tokenMint, request.riskDecision);
+
+        // 2. Verify Entry Strategy Clearance
+        if (!request.strategySignal || request.strategySignal.action !== 'BUY') {
+          throw new RiskGateInvariantViolationError(
+            `Invariant violation: Cannot execute paper BUY for token ${request.tokenMint}. Order must be approved by entry strategy with action 'BUY' (received: ${request.strategySignal?.action ?? 'NONE'}).`,
+            {
+              mint: request.tokenMint,
+              strategySignal: request.strategySignal,
+            },
+          );
+        }
+      }
+
       // Buying with slippage: price moves up
       executedPriceSol = request.currentPriceSol * (1 + slippageMultiplier);
       totalSol = request.solAmount;

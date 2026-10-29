@@ -1,5 +1,5 @@
 import type { StrategySignal, StrategyConfig } from './strategy.types.js';
-import type { RiskAssessmentResult } from '../risk/risk.types.js';
+import type { RiskAssessmentResult, RiskGateDecision } from '../risk/risk.types.js';
 import type { DiscoveredToken } from '../discovery/discovery.types.js';
 import type { PaperPosition } from '../persistence/persistence.types.js';
 
@@ -25,13 +25,39 @@ export class StrategyService {
   }
 
   /**
-   * Evaluate whether a newly discovered token passes risk & strategy entry filters
+   * Evaluate whether a newly discovered token passes risk & strategy entry filters.
+   * Rule 7: The strategy cannot override a risk rejection.
    */
   public evaluateEntry(
     token: DiscoveredToken,
-    risk: RiskAssessmentResult,
+    risk: RiskAssessmentResult | RiskGateDecision,
     openPositionsCount: number,
   ): StrategySignal {
+    // Rule 7: The strategy CANNOT override a risk rejection under any circumstances
+    if ('outcome' in risk) {
+      if (risk.outcome !== 'ELIGIBLE_FOR_STRATEGY' || !risk.passed) {
+        return {
+          action: 'HOLD',
+          tokenMint: token.mint,
+          tokenSymbol: token.symbol,
+          confidence: 0,
+          reason: `Risk gate outcome '${risk.outcome}' prevents strategy entry: ${risk.reasons.join('; ')}`,
+          timestamp: new Date(),
+        };
+      }
+    } else {
+      if (!risk.passed) {
+        return {
+          action: 'HOLD',
+          tokenMint: token.mint,
+          tokenSymbol: token.symbol,
+          confidence: 0,
+          reason: `Risk assessment failed: ${risk.reasons.join(', ')}`,
+          timestamp: new Date(),
+        };
+      }
+    }
+
     if (!this.config.autoTradeEnabled) {
       return {
         action: 'HOLD',
@@ -54,25 +80,17 @@ export class StrategyService {
       };
     }
 
-    if (!risk.passed) {
-      return {
-        action: 'HOLD',
-        tokenMint: token.mint,
-        tokenSymbol: token.symbol,
-        confidence: 0,
-        reason: `Risk assessment failed: ${risk.reasons.join(', ')}`,
-        timestamp: new Date(),
-      };
-    }
-
     // High confidence entry signal
+    const riskScoreInfo =
+      'score' in risk ? `risk score ${risk.score}/100` : `risk gate outcome ELIGIBLE_FOR_STRATEGY`;
+
     return {
       action: 'BUY',
       tokenMint: token.mint,
       tokenSymbol: token.symbol,
       sizeSol: this.config.fixedBuyAmountSol,
       confidence: 0.85,
-      reason: `Safe token discovered with risk score ${risk.score}/100 and initial liquidity ${token.initialLiquiditySol} SOL`,
+      reason: `Safe token discovered with ${riskScoreInfo} and initial liquidity ${token.initialLiquiditySol} SOL`,
       timestamp: new Date(),
     };
   }

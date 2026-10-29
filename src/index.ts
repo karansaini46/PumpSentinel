@@ -106,6 +106,14 @@ async function bootstrap(): Promise<void> {
         customLiquiditySol: token.initialLiquiditySol,
       });
 
+      const gateDecision = riskService.evaluateGate({
+        mint: token.mint,
+        symbol: token.symbol,
+        riskReport: comprehensiveReport,
+        analysisReport,
+        customLiquiditySol: token.initialLiquiditySol,
+      });
+
       logger.info(
         {
           mint: token.mint,
@@ -114,11 +122,14 @@ async function bootstrap(): Promise<void> {
           deterministicStatus: comprehensiveReport.overallStatus,
           deterministicScore: comprehensiveReport.overallScore,
           deterministicPassed: comprehensiveReport.passed,
+          gateOutcome: gateDecision.outcome,
+          gatePassed: gateDecision.passed,
+          gateDecisionId: gateDecision.decisionId,
           summary: comprehensiveReport.summary,
           metadataStatus: token.metadataStatus,
           completenessPct: analysisReport.overallSummary.dataCompletenessPct,
         },
-        '[DiscoveryService] Token analyzed & assessed for risk',
+        '[DiscoveryService] Token analyzed, assessed for risk & gate evaluated',
       );
     } catch (err) {
       logger.warn({ mint: token.mint, err }, '[DiscoveryService] Error analyzing token for risk');

@@ -4,7 +4,7 @@ import { healthService } from './modules/observability/index.js';
 import { prismaService } from './modules/persistence/index.js';
 import { ingestionStreamService } from './modules/ingestion/index.js';
 import { discoveryService } from './modules/discovery/index.js';
-import { riskService } from './modules/risk/index.js';
+import { riskService, portfolioRiskController } from './modules/risk/index.js';
 import { notificationsService } from './modules/notifications/index.js';
 import { telegramBotService } from './modules/telegram/index.js';
 import { tokenAnalysisService } from './modules/analysis/index.js';
@@ -42,6 +42,23 @@ async function bootstrap(): Promise<void> {
         eventsProcessed: health.eventsProcessed,
         duplicatesPrevented: health.duplicatesPrevented,
         reconnectCount: health.reconnectCount,
+      },
+    };
+  });
+
+  healthService.registerCheck('portfolio_risk', async () => {
+    const metrics = portfolioRiskController.getEquityMetrics();
+    const pause = portfolioRiskController.getPauseDetails();
+    return {
+      status: pause.isPaused ? 'degraded' : 'ok',
+      details: {
+        isPaused: pause.isPaused,
+        pauseReason: pause.reason,
+        totalEquitySol: metrics.totalEquitySol,
+        cashBalanceSol: metrics.cashBalanceSol,
+        openPositionsCount: metrics.openPositionsCount,
+        drawdownPct: metrics.currentDrawdownPct,
+        dailyLossPct: metrics.dailyLossPct,
       },
     };
   });
@@ -142,6 +159,9 @@ async function bootstrap(): Promise<void> {
   } catch (err) {
     logger.warn({ err }, 'PostgreSQL is offline. Application will operate with in-memory caching.');
   }
+
+  // Initialize portfolio-risk controller & perform reconciliation
+  await portfolioRiskController.initialize();
 
   // Start Ingestion stream
   await ingestionStreamService.start();

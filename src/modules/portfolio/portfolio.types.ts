@@ -50,11 +50,21 @@ export interface PositionDetails {
   unrealizedPnlUsd: number;
   unrealizedPnlPercent: number;
   openedAt: Date;
-  status: 'OPEN' | 'CLOSED' | 'EMERGENCY_CLOSED';
+  status: 'OPEN' | 'CLOSED' | 'EMERGENCY_CLOSED' | 'EXIT_PENDING';
   closedAt?: Date;
   closeReason?: string;
   totalFeesSol: number;
   totalFeesUsd: number;
+  exitPendingDetails?: {
+    tokenMint: string;
+    tokenSymbol: string;
+    amountTokens: number;
+    reason: string;
+    failureReason: string;
+    failedAttempts: number;
+    firstAttemptAt: Date;
+    lastAttemptAt: Date;
+  };
 }
 
 export interface PortfolioSummary {

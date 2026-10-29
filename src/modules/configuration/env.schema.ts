@@ -61,6 +61,15 @@ export const EnvSchema = z
     PAPER_MAX_SLIPPAGE_BPS: z.coerce.number().int().nonnegative().default(150),
     PAPER_SIMULATED_FEE_SOL: z.coerce.number().nonnegative().default(0.005),
 
+    PORTFOLIO_STOP_LOSS_PCT: z.coerce.number().positive().default(10.0),
+    PORTFOLIO_TAKE_PROFIT_PCT: z.coerce.number().positive().default(20.0),
+    PORTFOLIO_MAX_HOLDING_TIME_MS: z.coerce.number().positive().default(300000),
+    PORTFOLIO_MAX_DAILY_LOSS_PCT: z.coerce.number().positive().default(10.0),
+    PORTFOLIO_MAX_DRAWDOWN_PCT: z.coerce.number().positive().default(15.0),
+    PORTFOLIO_MAX_POSITION_SIZE_SOL: z.coerce.number().positive().default(1.0),
+    PORTFOLIO_MAX_CONCURRENT_POSITIONS: z.coerce.number().int().positive().default(5),
+    PORTFOLIO_MAX_TOTAL_EXPOSURE_SOL: z.coerce.number().positive().default(4.0),
+
     RISK_MAX_TOP10_HOLDING_PCT: z.coerce.number().min(0).max(100).default(30.0),
     RISK_MAX_DEV_HOLDING_PCT: z.coerce.number().min(0).max(100).default(10.0),
     RISK_MIN_LIQUIDITY_SOL: z.coerce.number().nonnegative().default(15.0),

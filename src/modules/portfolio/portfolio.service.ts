@@ -20,16 +20,16 @@ import {
   FutureMarketDataError,
 } from '../execution/execution.types.js';
 import { PaperExecutionEngine, paperExecutionEngine } from '../execution/paper-engine.service.js';
-import { paperTradingRepository } from '../persistence/paper-trading.repository.js';
+import { PaperTradingRepository, paperTradingRepository } from '../persistence/paper-trading.repository.js';
 import { logger } from '../observability/logger.js';
 
 export const DEFAULT_PORTFOLIO_CONFIG: PortfolioConfig = {
   startingBalanceUsd: 800.0, // Initial virtual portfolio starting balance: $800
   defaultPositionSizeUsd: 20.0, // Default position size: $20
   maxConcurrentPositions: 5, // Maximum concurrent positions: 5
-  takeProfitPct: 50.0, // Configurable take-profit (+50%)
-  stopLossPct: 20.0, // Configurable stop-loss (-20%)
-  maxHoldingTimeMs: 3600000, // Configurable maximum holding time (1 hour / 3,600,000 ms)
+  takeProfitPct: 20.0, // Configurable take-profit (+20%)
+  stopLossPct: 10.0, // Configurable stop-loss (-10%)
+  maxHoldingTimeMs: 300000, // Configurable maximum holding time (5 minutes / 300,000 ms)
   solPriceUsd: 160.0, // Reference SOL price for dual-currency accounting ($160/SOL)
 };
 
@@ -47,9 +47,14 @@ export class PortfolioService {
   private closedPositions: PositionDetails[] = [];
   private processedFillIds = new Set<string>();
   private pendingOrders = new Map<string, SimulatedOrderRequest>(); // Client order id tracking
+  private repository: PaperTradingRepository;
 
-  constructor(configOrInitialSol?: Partial<PortfolioConfig> | number) {
+  constructor(
+    configOrInitialSol?: Partial<PortfolioConfig> | number,
+    customRepository?: PaperTradingRepository,
+  ) {
     this.assertSimulationInvariants();
+    this.repository = customRepository ?? paperTradingRepository;
 
     if (typeof configOrInitialSol === 'number') {
       // Backward-compatible constructor accepting raw initialSolBalance
@@ -121,7 +126,7 @@ export class PortfolioService {
     this.closedPositions = [];
     this.processedFillIds.clear();
     this.pendingOrders.clear();
-    paperTradingRepository.clearMemory();
+    this.repository.clearMemory();
 
     logger.info(
       {
@@ -255,7 +260,7 @@ export class PortfolioService {
       this.openPositions.set(trade.tokenMint, newPosition);
 
       // Persist to repository
-      void paperTradingRepository.savePosition({
+      void this.repository.savePosition({
         id: positionId,
         tokenMint: trade.tokenMint,
         tokenSymbol: trade.tokenSymbol,
@@ -267,7 +272,7 @@ export class PortfolioService {
         openedAt: trade.executedAt,
       });
 
-      void paperTradingRepository.recordTrade({
+      void this.repository.recordTrade({
         id: trade.tradeId,
         positionId,
         tokenMint: trade.tokenMint,
@@ -281,7 +286,7 @@ export class PortfolioService {
         executedAt: trade.executedAt,
       });
 
-      void paperTradingRepository.saveAccount({
+      void this.repository.saveAccount({
         simulatedSolBalance: this.currentSolBalance,
         initialSolBalance: this.initialSolBalance,
         totalRealizedPnlSol: this.realizedPnlSol,
@@ -321,7 +326,7 @@ export class PortfolioService {
         this.closedPositions.push(existing);
         this.openPositions.delete(trade.tokenMint);
 
-        void paperTradingRepository.updatePositionStatus(
+        void this.repository.updatePositionStatus(
           trade.tokenMint,
           'CLOSED',
           tradePnlSol,
@@ -334,7 +339,7 @@ export class PortfolioService {
       }
 
       // Persist trade
-      void paperTradingRepository.recordTrade({
+      void this.repository.recordTrade({
         id: trade.tradeId,
         positionId: existing.id,
         tokenMint: trade.tokenMint,
@@ -348,7 +353,7 @@ export class PortfolioService {
         executedAt: trade.executedAt,
       });
 
-      void paperTradingRepository.saveAccount({
+      void this.repository.saveAccount({
         simulatedSolBalance: this.currentSolBalance,
         initialSolBalance: this.initialSolBalance,
         totalRealizedPnlSol: this.realizedPnlSol,
@@ -500,7 +505,7 @@ export class PortfolioService {
 
     pos.status = 'EMERGENCY_CLOSED';
     pos.closeReason = `EMERGENCY_CLOSE: ${reason}`;
-    void paperTradingRepository.updatePositionStatus(
+    void this.repository.updatePositionStatus(
       tokenMint,
       'EMERGENCY_CLOSED',
       undefined,
@@ -579,8 +584,8 @@ export class PortfolioService {
    */
   public async reconcile(): Promise<ReconciliationReport> {
     const auditNotes: string[] = [];
-    const allTrades = await paperTradingRepository.getAllTrades();
-    const allPositions = await paperTradingRepository.getAllPositions();
+    const allTrades = await this.repository.getAllTrades();
+    const allPositions = await this.repository.getAllPositions();
 
     let computedCashBalanceSol = this.initialSolBalance;
     let computedRealizedPnlSol = 0;

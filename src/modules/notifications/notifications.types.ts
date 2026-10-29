@@ -2,7 +2,12 @@ export type NotificationPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
 export interface SentinelNotification {
   id: string;
-  category: 'TOKEN_DISCOVERY' | 'RISK_ALERT' | 'TRADE_SIMULATION' | 'SYSTEM_HEALTH';
+  category:
+    | 'TOKEN_DISCOVERY'
+    | 'RISK_ALERT'
+    | 'TRADE_SIMULATION'
+    | 'SYSTEM_HEALTH'
+    | 'PORTFOLIO_RISK';
   priority: NotificationPriority;
   title: string;
   message: string;

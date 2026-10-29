@@ -83,7 +83,7 @@ export class PaperTradingRepository {
 
   public async updatePositionStatus(
     tokenMint: string,
-    status: 'OPEN' | 'CLOSED' | 'EMERGENCY_CLOSED',
+    status: 'OPEN' | 'CLOSED' | 'EMERGENCY_CLOSED' | 'EXIT_PENDING',
     realizedPnlSol?: number,
     closedAt?: Date,
   ): Promise<PaperPosition | null> {

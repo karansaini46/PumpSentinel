@@ -7,6 +7,7 @@ import { strategyService } from '../strategy/strategy.service.js';
 import { paperExecutionEngine } from '../execution/paper-engine.service.js';
 import { riskService } from '../risk/risk.service.js';
 import { tokenAnalysisService } from '../analysis/index.js';
+import { walletHistoryService } from '../wallet-history/index.js';
 
 export class CommandRegistry {
   private commands = new Map<string, CommandDefinition>();
@@ -63,6 +64,7 @@ export class CommandRegistry {
           '/sell <mint> - Execute a simulated paper SELL order',
           '/analyze <mint> - In-depth token analysis, supply & authorities',
           '/risk <mint> - View risk engine evaluation for a token',
+          '/creator <wallet> - On-chain creator wallet history & reputation',
           '/reset_portfolio - Reset paper balance to initial 10 SOL',
           '/help - Show this guide',
         ].join('\n');
@@ -377,6 +379,60 @@ export class CommandRegistry {
         await ctx.reply('🔄 Simulated portfolio has been reset to *10.0 SOL*.', {
           parse_mode: 'Markdown',
         });
+      },
+    });
+
+    this.register({
+      command: 'creator',
+      description: 'Historical wallet analysis: /creator <address>',
+      handler: async ({ ctx, args }) => {
+        const [wallet] = args;
+        if (!wallet) {
+          await ctx.reply('Usage: `/creator <walletAddress>`\nExample: `/creator 6EF8...`', {
+            parse_mode: 'Markdown',
+          });
+          return;
+        }
+
+        try {
+          const profile = await walletHistoryService.analyzeWalletHistory(wallet);
+          const icon =
+            profile.riskLevel === 'SAFE'
+              ? '🟢'
+              : profile.riskLevel === 'LOW'
+                ? '🟡'
+                : profile.riskLevel === 'MEDIUM'
+                  ? '🟠'
+                  : profile.riskLevel === 'UNKNOWN'
+                    ? '⚪'
+                    : '🔴';
+
+          const text = [
+            `${icon} *Historical Wallet Analysis*`,
+            `• Address: \`${wallet.slice(0, 6)}...${wallet.slice(-4)}\``,
+            `• Risk Level: *${profile.riskLevel}* (Score: ${profile.riskScore}/100)`,
+            `• Coverage: *${profile.coverage.coverage}* (${profile.coverage.totalSignaturesObserved} txs)`,
+            `• Freshness: ${profile.isFresh ? 'FRESH (cached)' : 'LIVE'}`,
+            '',
+            `📊 *Observed Activity:*`,
+            `• Prior Launches: *${profile.launches.length}*`,
+            `• Large Transfers: *${profile.largeTransfers.length}*`,
+            `• Early Purchases / Snipes: *${profile.earlyPurchases.length}*`,
+            `• Repeated Relationships: *${profile.repeatedRelationships.length}*`,
+            '',
+            profile.warnings.length > 0
+              ? `⚠️ *Warnings (${profile.warnings.length}):*\n` +
+                profile.warnings.map((w) => `• [${w.code}] ${w.title}`).join('\n')
+              : '✅ *Warnings:* No suspicious historical patterns detected.',
+            '',
+            `ℹ️ _${profile.explanation}_`,
+          ].join('\n');
+
+          await ctx.reply(text, { parse_mode: 'Markdown' });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await ctx.reply(`❌ Wallet analysis failed: ${message}`);
+        }
       },
     });
   }

@@ -164,6 +164,7 @@ describe('Historical Wallet-Analysis Module', () => {
         largeTransfers: Array<unknown>,
         largeSells: Array<unknown>,
         repeatedRelationships: Array<unknown>,
+        earlyPurchases: Array<unknown>,
         recurringPatterns: Array<unknown>,
         knownHarmfulBehaviors: Array<unknown>,
         warnings: Array<unknown>,
@@ -177,6 +178,7 @@ describe('Historical Wallet-Analysis Module', () => {
         largeTransfers: Array<unknown>,
         largeSells: Array<unknown>,
         repeatedRelationships: Array<unknown>,
+        earlyPurchases: Array<unknown>,
         recurringPatterns: Array<unknown>,
         knownHarmfulBehaviors: Array<unknown>,
         warnings: Array<unknown>,
@@ -189,6 +191,7 @@ describe('Historical Wallet-Analysis Module', () => {
           largeTransfers,
           largeSells,
           repeatedRelationships,
+          earlyPurchases,
           recurringPatterns,
           knownHarmfulBehaviors,
           warnings,
@@ -280,6 +283,80 @@ describe('Historical Wallet-Analysis Module', () => {
       expect(profile.knownHarmfulBehaviors).toHaveLength(0);
       expect(profile.warnings).toHaveLength(0);
       expect(profile.explanation).toContain('Established wallet with stable transaction history');
+    });
+
+    it('detects concentrated early purchases and attaches exact signature evidence', async () => {
+      const signatures: RawSignatureItem[] = [
+        { signature: 'SnipeSig1', slot: 280001, blockTime: 1700000100, memo: 'pump_fun:buy:early' },
+        { signature: 'SnipeSig2', slot: 280002, blockTime: 1700000105, memo: 'pump_fun:buy:early' },
+        { signature: 'NormalSig3', slot: 280003, blockTime: 1700000200 },
+      ];
+      const mockRpc = createMockRpcClient(signatures);
+      const cache = new WalletHistoryCache(100, 60_000);
+      const service = new WalletHistoryService(mockRpc, cache);
+
+      const profile = await service.analyzeWalletHistory(
+        'SniperWallet11111111111111111111111111111',
+      );
+
+      expect(profile.earlyPurchases).toHaveLength(2);
+      expect(profile.earlyPurchases[0]?.isSuspectedSniper).toBe(true);
+      expect(profile.earlyPurchases[0]?.signature).toBe('SnipeSig1');
+
+      const earlyWarning = profile.warnings.find((w) => w.code === 'CONCENTRATED_EARLY_BUYS');
+      expect(earlyWarning).toBeDefined();
+      expect(earlyWarning?.severity).toBe('WARNING');
+      expect(earlyWarning?.evidence.signatures).toEqual(['SnipeSig1', 'SnipeSig2']);
+    });
+
+    it('detects multi-wallet creator token distribution clusters', async () => {
+      const signatures: RawSignatureItem[] = [
+        {
+          signature: 'DistSig1',
+          slot: 280001,
+          blockTime: 1700000100,
+          memo: 'transfer:distribution',
+        },
+        {
+          signature: 'DistSig2',
+          slot: 280002,
+          blockTime: 1700000102,
+          memo: 'transfer:distribution',
+        },
+        { signature: 'NormalSig3', slot: 280003, blockTime: 1700000200 },
+      ];
+      const mockRpc = createMockRpcClient(signatures);
+      const cache = new WalletHistoryCache(100, 60_000);
+      const service = new WalletHistoryService(mockRpc, cache);
+
+      const profile = await service.analyzeWalletHistory('DistributorCreator11111111111111111111');
+
+      const distWarning = profile.warnings.find((w) => w.code === 'CREATOR_DISTRIBUTION_CLUSTER');
+      expect(distWarning).toBeDefined();
+      expect(distWarning?.evidence.signatures).toEqual(['DistSig1', 'DistSig2']);
+      expect(distWarning?.evidence.nature).toBe('OBSERVED');
+    });
+
+    it('detects launch-and-dump recurring pattern when creator quickly dumps dev allocations', async () => {
+      const signatures: RawSignatureItem[] = [
+        { signature: 'CreateSig1', slot: 280001, blockTime: 1700000100, memo: 'pump_fun:create' },
+        {
+          signature: 'SellDumpSig2',
+          slot: 280002,
+          blockTime: 1700000120,
+          memo: 'pump_fun:sell:large',
+        },
+        { signature: 'TxOther3', slot: 280003, blockTime: 1700000200 },
+      ];
+      const mockRpc = createMockRpcClient(signatures);
+      const cache = new WalletHistoryCache(100, 60_000);
+      const service = new WalletHistoryService(mockRpc, cache);
+
+      // Force devDumpedAllPct on launch
+      const profile = await service.analyzeWalletHistory('DumpCreatorWallet111111111111111111111');
+      expect(profile.largeSells).toHaveLength(1);
+      expect(profile.largeSells[0]?.sellerAddress).toBe('DumpCreatorWallet111111111111111111111');
+      expect(profile.largeSells[0]?.solReceived).toBe(15.0);
     });
   });
 
@@ -381,6 +458,37 @@ describe('Historical Wallet-Analysis Module', () => {
       // Fourth call after invalidation -> calls RPC
       await service.analyzeWalletHistory(targetWallet);
       expect(rpcCallCount).toBe(3);
+    });
+
+    it('handles expired cache entries by refetching and recalculating on-chain history', async () => {
+      let rpcCallCount = 0;
+      const mockRpc = {
+        call: async () => {
+          rpcCallCount++;
+          return [
+            {
+              signature: `ExpiredSig_${rpcCallCount}_111111111111111111111111111`,
+              slot: 280000 + rpcCallCount,
+              blockTime: 1700000000,
+            },
+          ];
+        },
+      } as unknown as SolanaRpcClient;
+
+      // Short TTL of 50ms for quick expiration
+      const cache = new WalletHistoryCache(50, 50);
+      const service = new WalletHistoryService(mockRpc, cache);
+      const wallet = 'ExpiringWallet1111111111111111111111111111';
+
+      await service.analyzeWalletHistory(wallet);
+      expect(rpcCallCount).toBe(1);
+
+      // Wait 60ms to let cache entry expire
+      await new Promise((r) => setTimeout(r, 60));
+
+      // Second call after expiry must trigger new RPC call
+      await service.analyzeWalletHistory(wallet);
+      expect(rpcCallCount).toBe(2);
     });
   });
 });

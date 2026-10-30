@@ -181,6 +181,41 @@ When interacting with your bot on Telegram:
 
 ---
 
+## 📊 Backtesting & Quantitative Evaluation Framework
+
+PumpSentinel includes an event-driven backtesting engine designed with **strict point-in-time constraints** and **zero look-ahead bias**.
+
+### Key Architecture Features
+
+1. **Zero Look-Ahead Bias**: Monotonic `HistoricalClock` ensures a decision at $t$ may only observe information available at $t_{decision} \le t$. Future data access triggers `LookaheadBiasError`.
+2. **Measured vs. Synthetic Segregation**: Historical on-chain data and synthetic stress fixtures are strictly segregated in reports and metrics tables.
+3. **Adversarial Market Stress Scenarios**:
+   - Flash crashes (-75% rapid drops with stop-loss gap execution).
+   - Rug-pull scenarios (dev dump, unrevoked authorities, liquidity drain).
+   - High slippage & low liquidity (< 15 SOL pool depth checks).
+   - Failed exits (`EXIT_PENDING` tagging on network drops).
+   - Missing and stale data (> 60s staleness rejection).
+   - Duplicate event deduplication & transaction burst sequencing.
+   - Provider outages & Telegram delivery drop resilience.
+4. **Calculated Metrics**:
+   - Total tokens evaluated & rejected breakdown with categorized reasons.
+   - Trade count, win rate %, net P&L (SOL & USD) after simulated fees and dynamic price impact.
+   - Max portfolio drawdown % and profit factor.
+   - Holding durations (mean, median, min, max).
+   - Missed opportunities tracking (rejected tokens that subsequently appreciated $\ge 20\%$).
+   - Ground truth confusion matrix (TP, FP, TN, FN, Precision, Recall / Scam Catch Rate, F1-Score).
+5. **Statistical Humility**: Explicit small sample warning whenever $N < 30$, reporting 95% Wilson score confidence intervals and standard errors.
+6. **Baseline Benchmarks**: Benchmarked against `BUY_ALL_NAIVE`, `MOMENTUM_ONLY`, and `RANDOM_ENTRY`.
+
+### Running Backtests
+
+```bash
+# Run standalone backtest CLI and export reproducible report to reports/
+npm run backtest
+```
+
+---
+
 ## 🧪 Quality Assurance & Scripts
 
 ```bash
@@ -193,8 +228,11 @@ npm run lint
 # Format code with Prettier
 npm run format
 
-# Run Vitest unit tests
+# Run Vitest test suite (unit & integration)
 npm run test
+
+# Run Backtest Framework
+npm run backtest
 ```
 
 ---

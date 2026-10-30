@@ -20,6 +20,7 @@
     "test:watch": "vitest",
     "healthcheck": "tsx src/scripts/healthcheck.ts",
     "replay": "tsx src/scripts/replay.ts",
+    "backtest": "tsx src/scripts/run-backtest.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"
   },

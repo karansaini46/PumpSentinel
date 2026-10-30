@@ -4,7 +4,10 @@ import {
   PaginationSchema,
   TopCommandSchema,
   HistoryCommandSchema,
+  SetCommandSchema,
+  ConfirmCommandSchema,
 } from './telegram.types.js';
+import { systemStateService, ConfigValueValidators } from '../system-state/index.js';
 import {
   escapeHtml,
   sanitizeSecrets,
@@ -79,10 +82,17 @@ export class CommandRegistry {
         const text = [
           '📋 <b>PumpSentinel Command Reference:</b>',
           '',
-          '<b>🛡️ Monitoring &amp; System:</b>',
-          '• /status — Ingestion stream, discovery stats &amp; pause status',
-          '• /health — System uptime, RAM usage &amp; subsystem health probes',
-          '• /settings — Configurable portfolio-risk limits &amp; parameters',
+          '<b>🛡️ State Machine &amp; Controls (Sensitive):</b>',
+          '• /status — Operating state (STOPPED/MONITORING/PAUSED/ERROR), stream &amp; risk',
+          '• /pause — Immediately engage global trading pause (blocks new positions)',
+          '• /resume — Resume monitoring and entries (requires healthy data &amp; valid config)',
+          '• /stop — Stop monitoring stream and new entries (positions remain protected)',
+          '',
+          '<b>⚙️ Configuration &amp; Safety (Sensitive):</b>',
+          '• /settings — View current risk limits, strategy bounds &amp; configurable parameters',
+          '• /set &lt;param&gt; &lt;val&gt; — Propose a validated configuration change (requires confirmation)',
+          '• /confirm &lt;token&gt; — Confirm and apply a proposed configuration change',
+          '• /cancel — Cancel any pending configuration changes',
           '',
           '<b>💼 Portfolio &amp; PnL:</b>',
           '• /paper — Paper-trading engine status &amp; strategy parameters',
@@ -91,15 +101,12 @@ export class CommandRegistry {
           '• /positions [page] — Active paper positions &amp; EXIT_PENDING status',
           '• /history [page] — Historical paper-trading ledger fills',
           '',
-          '<b>🛑 Risk Controls (Sensitive):</b>',
-          '• /pause — Engage global trading pause (blocks new positions)',
-          '• /resume — Resume global trading (unblocks new positions)',
-          '',
-          '<b>🔍 Market &amp; Tokens:</b>',
+          '<b>🔍 Market &amp; Inspection:</b>',
           '• /top [limit] — Top recently discovered pump.fun tokens',
           '• /inspect &lt;address&gt; — Deep token analysis, authorities &amp; risk evaluation',
+          '• /health — System uptime, RAM usage &amp; subsystem health probes',
           '',
-          'ℹ️ <i>All commands require authorized Telegram user-ID verification.</i>',
+          'ℹ️ <i>Sensitive commands require authorized Telegram user-ID verification. Real-money trading is strictly forbidden.</i>',
         ].join('\n');
         await replyHtml(text);
       },
@@ -110,8 +117,10 @@ export class CommandRegistry {
     // =========================================================================
     this.register({
       command: 'status',
-      description: 'Operating mode, ingestion stream, and discovery metrics',
+      description: 'Operating mode, state machine, ingestion stream, and discovery metrics',
       handler: async ({ replyHtml }: TelegramCommandContext) => {
+        const state = systemStateService.getState();
+        const lastTrans = systemStateService.getLastTransition();
         const streamMetrics = ingestionStreamService.getMetrics();
         const streamHealth = ingestionStreamService.getHealth();
         const discStats = discoveryService.getStats();
@@ -119,8 +128,23 @@ export class CommandRegistry {
         const openPositions = portfolioService.getOpenPositions();
         const pendingExits = portfolioRiskController.getExitPendingPositions();
 
+        const stateIcon =
+          state === 'MONITORING'
+            ? '🟢'
+            : state === 'PAUSED'
+              ? '🛑'
+              : state === 'STOPPED'
+                ? '⚪'
+                : '🔴';
         const streamIcon = streamMetrics.status === 'CONNECTED' ? '🟢' : '🔴';
-        const pauseIcon = pauseDetails.isPaused ? '🛑' : '🟢';
+
+        // Position monitoring policy definition (Requirement 5)
+        const positionPolicy =
+          state === 'STOPPED'
+            ? '<b>PROTECTED DORMANT:</b> Existing paper positions remain guarded by stop-loss, take-profit & holding-time exits.'
+            : state === 'PAUSED'
+              ? '<b>ACTIVE DORMANT:</b> Global entries paused; active positions monitor and execute exits normally.'
+              : '<b>FULL MONITORING:</b> Active risk management, dynamic trailing and exit triggers engaged.';
 
         const recentRejections = riskService.getGate().getRecentRejections(3);
         const rejectionRows =
@@ -131,28 +155,32 @@ export class CommandRegistry {
               )
             : ['• None recorded (All evaluated tokens clean)'];
 
+        const lastTransText = lastTrans
+          ? `• Last State Transition: <code>${lastTrans.fromState}</code> ➔ <b>${lastTrans.toState}</b> (${lastTrans.timestamp.toISOString().replace('T', ' ').slice(0, 19)} UTC by ${lastTrans.triggeredBy.username ?? lastTrans.triggeredBy.userId})`
+          : '• Last State Transition: Initial Boot';
+
         const text = [
           '📊 <b>PumpSentinel System Status</b>',
+          '• Operating Mode: <b>STRICTLY_SIMULATED_PAPER_TRADING</b>',
           '',
-          '<b>⚙️ Operating Mode:</b>',
-          '• Mode: <code>STRICTLY_SIMULATED_PAPER_TRADING</code>',
-          `• Global Trading: ${pauseIcon} <b>${pauseDetails.isPaused ? 'PAUSED' : 'ACTIVE'}</b>`,
+          '<b>⚙️ Explicit Operating State:</b>',
+          `• System State: ${stateIcon} <b>${state}</b>`,
+          `• Global Trading Entries: <b>${pauseDetails.isPaused || state !== 'MONITORING' ? 'BLOCKED' : 'ACTIVE'}</b>`,
+          `• Ingestion Stream: <b>${streamMetrics.status}</b> (${streamHealth.latencyMs}ms latency)`,
+          `• Position Safety Policy: ${positionPolicy}`,
+          lastTransText,
           pauseDetails.isPaused
-            ? `  <i>Reason: ${escapeHtml(pauseDetails.reason ?? 'N/A')} (${pauseDetails.trigger ?? 'MANUAL'})</i>`
+            ? `  <i>Pause Details: ${escapeHtml(pauseDetails.reason ?? 'N/A')} (${pauseDetails.trigger ?? 'MANUAL'})</i>`
             : '',
           '',
           '<b>🔌 Data-Provider Health &amp; Ingestion:</b>',
-          `• Stream Provider: ${streamIcon} <b>${escapeHtml(streamMetrics.status)}</b> (Latency: ${streamHealth.latencyMs}ms)`,
-          `• Endpoint: <code>${escapeHtml(streamHealth.sanitizedEndpoint)}</code>`,
-          `• Events Ingested: <b>${streamMetrics.eventsIngested.toLocaleString()}</b>`,
-          `• Reconnects: ${streamHealth.reconnectCount}`,
+          `• Stream Provider: ${streamIcon} <b>${escapeHtml(streamMetrics.status)}</b> (Endpoint: <code>${escapeHtml(streamHealth.sanitizedEndpoint)}</code>)`,
+          `• Events Ingested: <b>${streamMetrics.eventsIngested.toLocaleString()}</b> | Reconnects: ${streamHealth.reconnectCount}`,
           `• Duplicates Dropped: ${streamMetrics.duplicatesPrevented.toLocaleString()}`,
           '',
           '<b>🔍 Token Discovery:</b>',
-          `• Total Discovered: <b>${discStats.totalDiscovered.toLocaleString()}</b>`,
-          `• Active Cache Size: <b>${discStats.activeCacheSize}</b>`,
-          `• Last Slot: ${discStats.lastProcessedSlot.toLocaleString()}`,
-          `• Avg Latency: ${discStats.averageDiscoveryLatencyMs}ms`,
+          `• Total Discovered: <b>${discStats.totalDiscovered.toLocaleString()}</b> | Active Cache: <b>${discStats.activeCacheSize}</b>`,
+          `• Last Slot: ${discStats.lastProcessedSlot.toLocaleString()} (Avg Latency: ${discStats.averageDiscoveryLatencyMs}ms)`,
           '',
           '<b>🛡️ Recent Risk Rejections:</b>',
           ...rejectionRows,
@@ -209,27 +237,37 @@ export class CommandRegistry {
     });
 
     // =========================================================================
-    // 5. /pause (Sensitive)
+    // 5. /pause (Sensitive) - Requirement 2
     // =========================================================================
     this.register({
       command: 'pause',
-      description: 'Engage global trading pause (blocks new positions)',
+      description: 'Immediately engage global trading pause (blocks new positions)',
       isSensitive: true,
       handler: async ({ replyHtml, userId, username }: TelegramCommandContext) => {
-        portfolioRiskController.pauseTrading(
-          `Manual pause by Telegram operator ${username ?? userId}`,
-          'MANUAL',
-        );
+        const res = await systemStateService.pause(userId, username);
+
+        if (res.duplicate) {
+          await replyHtml(`ℹ️ <b>System is already in PAUSED state.</b> No change was made.`);
+          return;
+        }
+
+        if (!res.success) {
+          await replyHtml(
+            `❌ <b>Failed to pause:</b> ${escapeHtml(res.message || res.error || 'Unknown error')}`,
+          );
+          return;
+        }
 
         const text = [
           '🛑 <b>Global Trading Pause Engaged</b>',
           '',
-          '• <b>Trigger:</b> <code>MANUAL</code>',
+          `• <b>Operating State:</b> <code>PAUSED</code>`,
           `• <b>Operator:</b> <code>${escapeHtml(username ?? String(userId))}</code>`,
-          '• <b>Policy:</b> All new simulated positions are <b>strictly blocked</b>.',
-          '• <b>Exits:</b> Existing positions will continue to be monitored and can exit.',
+          '• <b>Trigger:</b> <code>MANUAL</code>',
+          '• <b>Policy:</b> All new simulated positions are <b>immediately blocked</b>.',
+          '• <b>Exits:</b> Existing open positions continue to be monitored and can exit normally.',
           '',
-          'Use /resume to resume global trading.',
+          'Use /resume to resume global trading and entries.',
         ].join('\n');
 
         await replyHtml(text);
@@ -237,24 +275,72 @@ export class CommandRegistry {
     });
 
     // =========================================================================
-    // 6. /resume (Sensitive)
+    // 6. /resume (Sensitive) - Requirement 3
     // =========================================================================
     this.register({
       command: 'resume',
-      description: 'Resume global trading (unblocks new positions)',
+      description: 'Resume global operations (requires healthy data sources & valid risk config)',
       isSensitive: true,
       handler: async ({ replyHtml, userId, username }: TelegramCommandContext) => {
-        portfolioRiskController.resumeTrading(
-          `Manual resume by Telegram operator ${username ?? userId}`,
-        );
+        const res = await systemStateService.resume(userId, username);
+
+        if (res.duplicate) {
+          await replyHtml(`ℹ️ <b>System is already in MONITORING state.</b> No change was made.`);
+          return;
+        }
+
+        if (!res.success) {
+          await replyHtml(res.message);
+          return;
+        }
 
         const text = [
           '✅ <b>Global Trading Resumed</b>',
           '',
+          `• <b>Operating State:</b> <code>MONITORING</code>`,
           `• <b>Operator:</b> <code>${escapeHtml(username ?? String(userId))}</code>`,
-          '• <b>Policy:</b> New position entries are now <b>unblocked</b>.',
+          '• <b>Preconditions:</b> Data sources verified healthy &amp; risk configuration validated.',
+          '• <b>Policy:</b> Ingestion stream active and new position entries are <b>unblocked</b>.',
           '',
           'Type /status to verify trading activity.',
+        ].join('\n');
+
+        await replyHtml(text);
+      },
+    });
+
+    // =========================================================================
+    // 6b. /stop (Sensitive) - Requirements 4 & 5
+    // =========================================================================
+    this.register({
+      command: 'stop',
+      description: 'Stop monitoring stream and new entries (existing positions remain protected)',
+      isSensitive: true,
+      handler: async ({ replyHtml, userId, username }: TelegramCommandContext) => {
+        const res = await systemStateService.stop(userId, username);
+
+        if (res.duplicate) {
+          await replyHtml(`ℹ️ <b>System is already in STOPPED state.</b> No change was made.`);
+          return;
+        }
+
+        if (!res.success) {
+          await replyHtml(
+            `❌ <b>Failed to stop:</b> ${escapeHtml(res.message || res.error || 'Unknown error')}`,
+          );
+          return;
+        }
+
+        const text = [
+          '⚪ <b>System Operating State: STOPPED</b>',
+          '',
+          `• <b>Operating State:</b> <code>STOPPED</code>`,
+          `• <b>Operator:</b> <code>${escapeHtml(username ?? String(userId))}</code>`,
+          '• <b>Ingestion Stream:</b> <b>STOPPED</b> (New token discovery halted).',
+          '• <b>New Entries:</b> <b>STRICTLY BLOCKED</b>.',
+          '• <b>Existing Paper Positions:</b> <b>PROTECTED &amp; MONITORED</b> (Stop-loss, take-profit, and max holding time exit bounds remain active to safeguard virtual equity).',
+          '',
+          'Use /resume to restart monitoring and trading.',
         ].join('\n');
 
         await replyHtml(text);
@@ -269,6 +355,12 @@ export class CommandRegistry {
       description: 'List active open paper positions and EXIT_PENDING tokens',
       handler: async ({ replyHtml, args }: TelegramCommandContext) => {
         const parseRes = PaginationSchema.safeParse({ page: args[0] });
+        if (args[0] !== undefined && !parseRes.success) {
+          await replyHtml(
+            '❌ <b>Invalid Command Argument:</b>\nPage number must be a positive integer (e.g., <code>/positions 2</code>).',
+          );
+          return;
+        }
         const page = parseRes.success ? parseRes.data.page : 1;
 
         const openPositions = portfolioService.getOpenPositions();
@@ -411,6 +503,12 @@ export class CommandRegistry {
       description: 'Top discovered pump.fun tokens: /top [limit]',
       handler: async ({ replyHtml, args }: TelegramCommandContext) => {
         const parseRes = TopCommandSchema.safeParse({ limit: args[0] });
+        if (args[0] !== undefined && !parseRes.success) {
+          await replyHtml(
+            '❌ <b>Invalid Command Argument:</b>\nLimit must be an integer between 1 and 25 (e.g., <code>/top 10</code>).',
+          );
+          return;
+        }
         const limit = parseRes.success ? parseRes.data.limit : 5;
 
         const tokens = discoveryService.getCachedTokens();
@@ -549,6 +647,12 @@ export class CommandRegistry {
       description: 'Historical paper trade ledger fills: /history [page]',
       handler: async ({ replyHtml, args }: TelegramCommandContext) => {
         const parseRes = HistoryCommandSchema.safeParse({ page: args[0] });
+        if (args[0] !== undefined && !parseRes.success) {
+          await replyHtml(
+            '❌ <b>Invalid Command Argument:</b>\nPage number must be a positive integer (e.g., <code>/history 2</code>).',
+          );
+          return;
+        }
         const page = parseRes.success ? parseRes.data.page : 1;
 
         const allTrades = await paperTradingRepository.getAllTrades();
@@ -596,7 +700,7 @@ export class CommandRegistry {
     });
 
     // =========================================================================
-    // 13. /settings (Sensitive)
+    // 13. /settings (Sensitive) - Requirement 7
     // =========================================================================
     this.register({
       command: 'settings',
@@ -606,6 +710,7 @@ export class CommandRegistry {
         const riskConfig = portfolioRiskController.getConfig();
         const stratConfig = strategyService.getConfig();
         const allConfig = configService.getAll();
+        const state = systemStateService.getState();
 
         const sanitizedSolanaHttp = sanitizeSecrets(allConfig.SOLANA_RPC_HTTP_URL);
         const sanitizedSolanaWs = sanitizeSecrets(allConfig.SOLANA_RPC_WS_URL);
@@ -616,19 +721,24 @@ export class CommandRegistry {
         const text = [
           '⚙️ <b>PumpSentinel Configuration &amp; Risk Settings</b>',
           '',
+          `• <b>Operating State:</b> <code>${state}</code>`,
+          '',
           '<b>🛡️ Portfolio-Risk Controller Limits:</b>',
-          `• Stop-Loss Threshold: <b>-${riskConfig.stopLossPct}%</b>`,
-          `• Take-Profit Target: <b>+${riskConfig.takeProfitPct}%</b>`,
-          `• Maximum Holding Time: <b>${Math.round(riskConfig.maxHoldingDurationMs / 1000)}s</b> (${Math.round(riskConfig.maxHoldingDurationMs / 60000)}m)`,
-          `• Maximum Daily Loss: <b>${riskConfig.maxDailyLossPct}%</b> of daily equity`,
-          `• Maximum Drawdown: <b>${riskConfig.maxDrawdownPct}%</b> from high-water mark`,
-          `• Maximum Position Size: <b>${riskConfig.maxPositionSizeSol} SOL</b> ($${formatUsd(riskConfig.maxPositionSizeSol * riskConfig.solPriceUsd)})`,
-          `• Maximum Concurrent Positions: <b>${riskConfig.maxConcurrentPositions}</b>`,
-          `• Maximum Total Exposure: <b>${riskConfig.maxTotalExposureSol} SOL</b> (${riskConfig.maxTotalExposurePct}%)`,
+          `• Stop-Loss Threshold (<code>stop_loss</code>): <b>-${riskConfig.stopLossPct}%</b> (Allowed: 1% to 50%)`,
+          `• Take-Profit Target (<code>take_profit</code>): <b>+${riskConfig.takeProfitPct}%</b> (Allowed: 5% to 500%)`,
+          `• <code>max_holding_time_sec</code>: <b>${Math.round(riskConfig.maxHoldingDurationMs / 1000)}s</b> (${Math.round(riskConfig.maxHoldingDurationMs / 60000)}m) (Allowed: 10s to 86400s)`,
+          `• <code>max_daily_loss</code>: <b>${riskConfig.maxDailyLossPct}%</b> of daily equity (Allowed: 1% to 50%)`,
+          `• <code>max_drawdown</code>: <b>${riskConfig.maxDrawdownPct}%</b> from high-water mark (Allowed: 1% to 50%)`,
+          `• <code>max_position_size</code>: <b>${riskConfig.maxPositionSizeSol} SOL</b> ($${formatUsd(riskConfig.maxPositionSizeSol * riskConfig.solPriceUsd)}) (Allowed: 0.01 to 100 SOL)`,
+          `• <code>max_concurrent_positions</code>: <b>${riskConfig.maxConcurrentPositions}</b> (Allowed: 1 to 50)`,
+          `• <code>max_total_exposure_pct</code>: <b>${riskConfig.maxTotalExposurePct}%</b> (${riskConfig.maxTotalExposureSol} SOL) (Allowed: 5% to 100%)`,
           '',
           '<b>🤖 Strategy Parameters:</b>',
-          `• Auto-Trade Enabled: <b>${stratConfig.autoTradeEnabled ? 'YES' : 'NO'}</b>`,
-          `• Fixed Buy Size: <b>${stratConfig.fixedBuyAmountSol} SOL</b>`,
+          `• <code>auto_trade</code>: <b>${stratConfig.autoTradeEnabled ? 'ON' : 'OFF'}</b> (Allowed: on/off)`,
+          `• <code>fixed_buy_amount</code>: <b>${stratConfig.fixedBuyAmountSol} SOL</b> (Allowed: 0.01 to 10 SOL)`,
+          '',
+          '<b>🔧 Propose Configuration Change:</b>',
+          'Use <code>/set &lt;param&gt; &lt;value&gt;</code> to propose a change.\n<i>Example: <code>/set stop_loss 12</code></i>\n<i>Changes require explicit two-phase confirmation (/confirm &lt;token&gt;).</i>',
           '',
           '<b>🌐 RPC Endpoints (Sanitized - Zero Secrets Exposed):</b>',
           `• Solana HTTP: <code>${escapeHtml(sanitizedSolanaHttp)}</code>`,
@@ -639,6 +749,73 @@ export class CommandRegistry {
         ].join('\n');
 
         await replyHtml(text);
+      },
+    });
+
+    // =========================================================================
+    // 13b. /set <param> <value> (Sensitive) - Requirement 8
+    // =========================================================================
+    this.register({
+      command: 'set',
+      description: 'Propose a configuration change: /set <param> <value>',
+      isSensitive: true,
+      handler: async ({ replyHtml, userId, username, args }: TelegramCommandContext) => {
+        const parseRes = SetCommandSchema.safeParse({ param: args[0], value: args[1] });
+        if (!parseRes.success) {
+          const allowed = Object.keys(ConfigValueValidators)
+            .map((k) => `• <code>${k}</code>`)
+            .join('\n');
+          await replyHtml(
+            `❌ <b>Invalid Command Syntax:</b>\nUsage: <code>/set &lt;param&gt; &lt;value&gt;</code>\n\n<b>Allowed parameters:</b>\n${allowed}\n\n<b>Example:</b> <code>/set stop_loss 12</code>`,
+          );
+          return;
+        }
+
+        const result = systemStateService.proposeConfigChange(
+          userId,
+          username,
+          parseRes.data.param,
+          parseRes.data.value,
+        );
+        await replyHtml(result.message);
+      },
+    });
+
+    // =========================================================================
+    // 13c. /confirm <token> (Sensitive) - Requirement 8
+    // =========================================================================
+    this.register({
+      command: 'confirm',
+      description: 'Confirm a proposed configuration change: /confirm <token>',
+      isSensitive: true,
+      handler: async ({ replyHtml, userId, username, args }: TelegramCommandContext) => {
+        const parseRes = ConfirmCommandSchema.safeParse({ token: args[0] });
+        if (!parseRes.success) {
+          await replyHtml(
+            `❌ <b>Invalid Confirmation Token:</b>\nUsage: <code>/confirm &lt;token&gt;</code>\nExample: <code>/confirm cfg_a1b2c3d4</code>`,
+          );
+          return;
+        }
+
+        const result = await systemStateService.confirmConfigChange(
+          userId,
+          username,
+          parseRes.data.token,
+        );
+        await replyHtml(result.message);
+      },
+    });
+
+    // =========================================================================
+    // 13d. /cancel (Sensitive) - Requirement 8
+    // =========================================================================
+    this.register({
+      command: 'cancel',
+      description: 'Cancel any pending configuration changes: /cancel',
+      isSensitive: true,
+      handler: async ({ replyHtml, userId }: TelegramCommandContext) => {
+        const result = systemStateService.cancelConfigChange(userId);
+        await replyHtml(result.message);
       },
     });
 

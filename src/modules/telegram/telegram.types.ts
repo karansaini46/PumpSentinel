@@ -23,7 +23,9 @@ export type CommandAuditStatus =
   | 'REJECTED_UNAUTHORIZED'
   | 'REJECTED_RATE_LIMIT'
   | 'VALIDATION_FAILED'
-  | 'EXECUTION_FAILED';
+  | 'EXECUTION_FAILED'
+  | 'DUPLICATE_IGNORED'
+  | 'UNKNOWN_COMMAND';
 
 export interface CommandAuditRecord {
   id: string;
@@ -34,6 +36,7 @@ export interface CommandAuditRecord {
   status: CommandAuditStatus;
   durationMs: number;
   error?: string;
+  metadata?: Record<string, unknown>;
   timestamp: Date;
 }
 
@@ -66,4 +69,24 @@ export const TopCommandSchema = z.object({
 export const HistoryCommandSchema = z.object({
   page: z.coerce.number().int().min(1, 'Page must be 1 or greater').default(1),
   pageSize: z.coerce.number().int().min(1).max(20).default(5),
+});
+
+export const SetCommandSchema = z.object({
+  param: z
+    .string({ required_error: 'Parameter name is required' })
+    .trim()
+    .min(1, 'Parameter name cannot be empty'),
+  value: z
+    .string({ required_error: 'Parameter value is required' })
+    .trim()
+    .min(1, 'Parameter value cannot be empty'),
+});
+
+export const ConfirmCommandSchema = z.object({
+  token: z
+    .string({ required_error: 'Confirmation token is required' })
+    .trim()
+    .min(6, 'Confirmation token must be at least 6 characters')
+    .max(32, 'Confirmation token cannot exceed 32 characters')
+    .regex(/^cfg_[a-fA-F0-9]+$/, 'Invalid confirmation token format (expected cfg_xxxx)'),
 });

@@ -15,6 +15,10 @@ export class IngestionStreamService implements IIngestionService {
   private unsubscribeStatusChange: (() => void) | null = null;
   private isRunning = false;
 
+  public get running(): boolean {
+    return this.isRunning;
+  }
+
   constructor(customProvider?: ISolanaDataProvider) {
     this.emitter.on('error', (err) => {
       logger.error({ err }, '[IngestionStreamService] Uncaught stream error');

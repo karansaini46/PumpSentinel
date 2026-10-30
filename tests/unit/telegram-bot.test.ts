@@ -274,6 +274,10 @@ describe('Telegram Control Interface Module', () => {
         'history',
         'settings',
         'health',
+        'stop',
+        'set',
+        'confirm',
+        'cancel',
       ];
 
       for (const cmdName of requiredCommands) {
@@ -283,11 +287,11 @@ describe('Telegram Control Interface Module', () => {
         expect(cmd?.description.length).toBeGreaterThan(0);
       }
 
-      expect(commandRegistry.getCommands().length).toBe(14);
+      expect(commandRegistry.getCommands().length).toBe(18);
     });
 
-    it('marks /pause, /resume, and /settings as sensitive commands', () => {
-      const sensitiveCommands = ['pause', 'resume', 'settings'];
+    it('marks /pause, /resume, /stop, /settings, /set, /confirm, and /cancel as sensitive commands', () => {
+      const sensitiveCommands = ['pause', 'resume', 'stop', 'settings', 'set', 'confirm', 'cancel'];
       for (const cmdName of sensitiveCommands) {
         const cmd = commandRegistry.getCommand(cmdName);
         expect(cmd?.isSensitive).toBe(true);
@@ -385,30 +389,35 @@ describe('Telegram Control Interface Module', () => {
     });
 
     it('executes /pause and /resume to engage and release global trading pause', async () => {
-      const pauseCmd = commandRegistry.getCommand('pause')!;
-      const resumeCmd = commandRegistry.getCommand('resume')!;
-      let replyOutput = '';
+      const authSpy = vi.spyOn(configService, 'isAuthorizedUser').mockReturnValue(true);
+      try {
+        const pauseCmd = commandRegistry.getCommand('pause')!;
+        const resumeCmd = commandRegistry.getCommand('resume')!;
+        let replyOutput = '';
 
-      const mockContext: TelegramCommandContext = {
-        ctx: {} as any,
-        userId: 12345,
-        username: 'sol_operator',
-        args: [],
-        replyHtml: async (html: string) => {
-          replyOutput = html;
-        },
-      };
+        const mockContext: TelegramCommandContext = {
+          ctx: {} as any,
+          userId: 12345,
+          username: 'sol_operator',
+          args: [],
+          replyHtml: async (html: string) => {
+            replyOutput = html;
+          },
+        };
 
-      // 1. Pause
-      await pauseCmd.handler(mockContext);
-      expect(replyOutput).toContain('Global Trading Pause Engaged');
-      expect(replyOutput).toContain('MANUAL');
-      expect(portfolioRiskController.getPauseDetails().isPaused).toBe(true);
+        // 1. Pause
+        await pauseCmd.handler(mockContext);
+        expect(replyOutput).toContain('Global Trading Pause Engaged');
+        expect(replyOutput).toContain('MANUAL');
+        expect(portfolioRiskController.getPauseDetails().isPaused).toBe(true);
 
-      // 2. Resume
-      await resumeCmd.handler(mockContext);
-      expect(replyOutput).toContain('Global Trading Resumed');
-      expect(portfolioRiskController.getPauseDetails().isPaused).toBe(false);
+        // 2. Resume
+        await resumeCmd.handler(mockContext);
+        expect(replyOutput).toContain('Global Trading Resumed');
+        expect(portfolioRiskController.getPauseDetails().isPaused).toBe(false);
+      } finally {
+        authSpy.mockRestore();
+      }
     });
 
     it('executes /balance displaying virtual cash and risk metrics', async () => {

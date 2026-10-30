@@ -41,3 +41,7 @@ Thumbs.db
 
 # Docker
 .docker/
+
+# Runtime Data & State
+data/
+

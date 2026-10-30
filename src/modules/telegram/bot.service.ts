@@ -8,7 +8,8 @@ import type { CommandAuditRecord } from './telegram.types.js';
 import { commandRegistry } from './command-registry.js';
 import { telegramDeduplicator } from './telegram-deduplicator.js';
 import { telegramRateLimiter } from './telegram-rate-limiter.js';
-import { sanitizeSecrets, chunkMessage } from './telegram-utils.js';
+import { sanitizeSecrets, chunkMessage, escapeHtml } from './telegram-utils.js';
+import { systemStateRepository } from '../system-state/index.js';
 import { configService } from '../configuration/config.service.js';
 import { prismaService } from '../persistence/prisma.service.js';
 import { logger } from '../observability/logger.js';
@@ -62,6 +63,19 @@ export class TelegramBotService implements INotificationChannel {
 
       if (dedupeKey && telegramDeduplicator.checkAndMark(dedupeKey)) {
         logger.warn({ dedupeKey }, '[TelegramBot] Duplicate update/message dropped');
+        if (userId) {
+          this.recordAudit({
+            id: `audit_${crypto.randomUUID()}`,
+            userId,
+            username: ctx.from?.username,
+            command: ctx.message?.text?.split(/\s+/)[0] ?? 'UPDATE',
+            args: [],
+            status: 'DUPLICATE_IGNORED',
+            durationMs: 0,
+            error: 'Duplicate update or message dropped by deduplicator',
+            timestamp: new Date(),
+          });
+        }
         return; // Drop duplicate
       }
 
@@ -204,12 +218,30 @@ export class TelegramBotService implements INotificationChannel {
       });
     }
 
-    // 6. Fallback for non-command text
+    // 6. Fallback for non-command text and unknown commands (Requirement 9)
     this.bot.on('message:text', async (ctx) => {
-      if (ctx.message.text.startsWith('/')) {
-        await ctx.reply('❓ <b>Unknown command.</b> Type /help to see all available commands.', {
-          parse_mode: 'HTML',
+      const text = ctx.message.text.trim();
+      const userId = ctx.from?.id ?? 0;
+      const username = ctx.from?.username;
+
+      if (text.startsWith('/')) {
+        const cmdName = text.split(/\s+/)[0]?.slice(1) ?? '';
+        this.recordAudit({
+          id: `audit_${crypto.randomUUID()}`,
+          userId,
+          username,
+          command: cmdName,
+          args: text.split(/\s+/).slice(1),
+          status: 'UNKNOWN_COMMAND',
+          durationMs: 0,
+          error: `Unknown command: /${cmdName}`,
+          timestamp: new Date(),
         });
+
+        await ctx.reply(
+          `❓ <b>Unknown command:</b> <code>/${escapeHtml(cmdName)}</code>\nType /help to see all available commands.`,
+          { parse_mode: 'HTML' },
+        );
       } else {
         await ctx.reply(
           '👋 <b>PumpSentinel is listening.</b> Type /help to view command reference or /status for stream status.',
@@ -346,7 +378,7 @@ export class TelegramBotService implements INotificationChannel {
   }
 
   /**
-   * Record command execution and failures (Requirement 9)
+   * Record command execution and failures (Requirement 12)
    */
   private recordAudit(record: CommandAuditRecord): void {
     this.auditHistory.unshift(record);
@@ -365,7 +397,8 @@ export class TelegramBotService implements INotificationChannel {
       '[TelegramBot] Command executed and audited',
     );
 
-    // Persist to database if PostgreSQL is connected
+    // Persist to local disk audit log and PostgreSQL
+    void systemStateRepository.recordAudit(record);
     if (prismaService.connected) {
       try {
         const client = prismaService.getClient();

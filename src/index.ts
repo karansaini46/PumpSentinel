@@ -9,6 +9,7 @@ import { portfolioService } from './modules/portfolio/index.js';
 import { notificationsService } from './modules/notifications/index.js';
 import { telegramBotService } from './modules/telegram/index.js';
 import { tokenAnalysisService } from './modules/analysis/index.js';
+import { systemStateService } from './modules/system-state/index.js';
 
 async function bootstrap(): Promise<void> {
   logger.info('====================================================');
@@ -264,8 +265,15 @@ async function bootstrap(): Promise<void> {
   // Initialize portfolio-risk controller & perform reconciliation
   await portfolioRiskController.initialize();
 
-  // Start Ingestion stream
-  await ingestionStreamService.start();
+  // Initialize explicit system operating state across restarts (Requirement 11)
+  await systemStateService.init();
+
+  // Start Ingestion stream only if not in STOPPED state
+  if (systemStateService.getState() !== 'STOPPED') {
+    await ingestionStreamService.start();
+  } else {
+    logger.info('[Bootstrap] Ingestion stream remaining STOPPED per persisted operating state');
+  }
 
   // Start Telegram Bot if token is provided
   if (config.TELEGRAM_BOT_TOKEN && !config.TELEGRAM_BOT_TOKEN.includes('example')) {

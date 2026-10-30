@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { RateLimiter } from './rate-limiter.js';
+import { CircuitBreaker } from '../../observability/circuit-breaker.js';
 import { logger } from '../../observability/logger.js';
 
 export const JsonRpcErrorSchema = z.object({
@@ -42,6 +43,7 @@ export class SolanaRpcClient {
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
   private readonly rateLimiter: RateLimiter;
+  private readonly circuitBreaker: CircuitBreaker;
   private requestId = 0;
   private metrics: RpcMetrics = {
     totalRequests: 0,
@@ -57,6 +59,12 @@ export class SolanaRpcClient {
     this.maxRetries = options.maxRetries ?? 3;
     this.rateLimiter = new RateLimiter({
       maxRequestsPerSecond: options.maxRequestsPerSecond ?? 10,
+    });
+    this.circuitBreaker = new CircuitBreaker({
+      name: 'solana-rpc',
+      failureThreshold: 5,
+      cooldownMs: 15000,
+      successThreshold: 2,
     });
   }
 
@@ -86,100 +94,106 @@ export class SolanaRpcClient {
     params: unknown[] = [],
     schema?: z.ZodType<T>,
   ): Promise<T> {
-    let lastError: Error | null = null;
+    return this.circuitBreaker.execute(async () => {
+      let lastError: Error | null = null;
 
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      if (attempt > 0) {
-        this.metrics.retriedRequests += 1;
-        const backoffMs = Math.min(5000, Math.pow(2, attempt) * 200 + Math.random() * 100);
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
-      }
-
-      await this.rateLimiter.acquire();
-      this.metrics.totalRequests += 1;
-      const startTime = Date.now();
-
-      try {
-        const id = ++this.requestId;
-        const payload = {
-          jsonrpc: '2.0',
-          id,
-          method,
-          params,
-        };
-
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-
-        const res = await fetch(this.httpUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timer);
-        this.metrics.lastLatencyMs = Date.now() - startTime;
-
-        if (res.status === 429) {
-          const retryAfter = res.headers.get('retry-after');
-          const delay = retryAfter ? parseInt(retryAfter, 10) * 1000 : 1000;
-          logger.warn(
-            { delay, sanitizedUrl: this.sanitizedUrl },
-            '[SolanaRpcClient] HTTP 429 Rate limited. Backing off.',
-          );
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          throw new Error('Rate limit exceeded (HTTP 429)');
+      for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+        if (attempt > 0) {
+          this.metrics.retriedRequests += 1;
+          const backoffMs = Math.min(5000, Math.pow(2, attempt) * 200 + Math.random() * 100);
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
         }
 
-        if (!res.ok) {
-          throw new Error(`HTTP Error ${res.status}: ${res.statusText}`);
-        }
+        await this.rateLimiter.acquire();
+        this.metrics.totalRequests += 1;
+        const startTime = Date.now();
 
-        const rawJson: unknown = await res.json();
-        const parsedRpc = JsonRpcResponseSchema.safeParse(rawJson);
+        try {
+          const id = ++this.requestId;
+          const payload = {
+            jsonrpc: '2.0',
+            id,
+            method,
+            params,
+          };
 
-        if (!parsedRpc.success) {
-          throw new Error(
-            `Invalid JSON-RPC response format: ${parsedRpc.error.issues.map((i) => i.message).join(', ')}`,
-          );
-        }
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
-        if ('error' in parsedRpc.data && parsedRpc.data.error) {
-          throw new Error(
-            `RPC Error ${parsedRpc.data.error.code}: ${parsedRpc.data.error.message}`,
-          );
-        }
+          const res = await fetch(this.httpUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
 
-        const result = parsedRpc.data.result;
-        if (schema) {
-          const validatedResult = schema.safeParse(result);
-          if (!validatedResult.success) {
+          clearTimeout(timer);
+          this.metrics.lastLatencyMs = Date.now() - startTime;
+
+          if (res.status === 429) {
+            const retryAfter = res.headers.get('retry-after');
+            const delay = retryAfter ? parseInt(retryAfter, 10) * 1000 : 1000;
+            logger.warn(
+              { delay, sanitizedUrl: this.sanitizedUrl },
+              '[SolanaRpcClient] HTTP 429 Rate limited. Backing off.',
+            );
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            throw new Error('Rate limit exceeded (HTTP 429)');
+          }
+
+          if (!res.ok) {
+            throw new Error(`HTTP Error ${res.status}: ${res.statusText}`);
+          }
+
+          const rawJson: unknown = await res.json();
+          const parsedRpc = JsonRpcResponseSchema.safeParse(rawJson);
+
+          if (!parsedRpc.success) {
             throw new Error(
-              `Response data failed schema validation: ${validatedResult.error.issues.map((i) => i.message).join(', ')}`,
+              `Invalid JSON-RPC response format: ${parsedRpc.error.issues.map((i) => i.message).join(', ')}`,
             );
           }
+
+          if ('error' in parsedRpc.data && parsedRpc.data.error) {
+            throw new Error(
+              `RPC Error ${parsedRpc.data.error.code}: ${parsedRpc.data.error.message}`,
+            );
+          }
+
+          const result = parsedRpc.data.result;
+          if (schema) {
+            const validatedResult = schema.safeParse(result);
+            if (!validatedResult.success) {
+              throw new Error(
+                `Response data failed schema validation: ${validatedResult.error.issues.map((i) => i.message).join(', ')}`,
+              );
+            }
+            this.metrics.successfulRequests += 1;
+            return validatedResult.data;
+          }
+
           this.metrics.successfulRequests += 1;
-          return validatedResult.data;
+          return result as T;
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          logger.debug(
+            { attempt, maxRetries: this.maxRetries, method, err: lastError.message },
+            '[SolanaRpcClient] RPC call failed',
+          );
         }
-
-        this.metrics.successfulRequests += 1;
-        return result as T;
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        logger.debug(
-          { attempt, maxRetries: this.maxRetries, method, err: lastError.message },
-          '[SolanaRpcClient] RPC call failed',
-        );
       }
-    }
 
-    this.metrics.failedRequests += 1;
-    logger.error(
-      { method, sanitizedUrl: this.sanitizedUrl, error: lastError?.message },
-      '[SolanaRpcClient] RPC call exhausted all retries',
-    );
-    throw lastError ?? new Error(`RPC call failed for method ${method}`);
+      this.metrics.failedRequests += 1;
+      logger.error(
+        { method, sanitizedUrl: this.sanitizedUrl, error: lastError?.message },
+        '[SolanaRpcClient] RPC call exhausted all retries',
+      );
+      throw lastError ?? new Error(`RPC call failed for method ${method}`);
+    });
+  }
+
+  public getCircuitBreaker(): CircuitBreaker {
+    return this.circuitBreaker;
   }
 
   public async getSlot(): Promise<number> {

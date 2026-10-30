@@ -64,7 +64,7 @@ export class TelegramBotService implements INotificationChannel {
       if (dedupeKey && telegramDeduplicator.checkAndMark(dedupeKey)) {
         logger.warn({ dedupeKey }, '[TelegramBot] Duplicate update/message dropped');
         if (userId) {
-          this.recordAudit({
+          await this.recordAudit({
             id: `audit_${crypto.randomUUID()}`,
             userId,
             username: ctx.from?.username,
@@ -89,7 +89,7 @@ export class TelegramBotService implements INotificationChannel {
 
       if (!configService.isAuthorizedUser(userId)) {
         logger.warn({ userId }, '[TelegramBot] Unauthorized user rejected before execution');
-        this.recordAudit({
+        await this.recordAudit({
           id: `audit_${crypto.randomUUID()}`,
           userId,
           username: ctx.from?.username,
@@ -122,7 +122,7 @@ export class TelegramBotService implements INotificationChannel {
           { userId, retryAfter: check.retryAfterSeconds },
           '[TelegramBot] Command rate limit exceeded',
         );
-        this.recordAudit({
+        await this.recordAudit({
           id: `audit_${crypto.randomUUID()}`,
           userId,
           username: ctx.from?.username,
@@ -181,7 +181,7 @@ export class TelegramBotService implements INotificationChannel {
         try {
           await cmd.handler({ ctx, userId, username, args, replyHtml });
 
-          this.recordAudit({
+          await this.recordAudit({
             id: `audit_${crypto.randomUUID()}`,
             userId,
             username,
@@ -199,7 +199,7 @@ export class TelegramBotService implements INotificationChannel {
             '[TelegramBot] Command execution failed',
           );
 
-          this.recordAudit({
+          await this.recordAudit({
             id: `audit_${crypto.randomUUID()}`,
             userId,
             username,
@@ -226,7 +226,7 @@ export class TelegramBotService implements INotificationChannel {
 
       if (text.startsWith('/')) {
         const cmdName = text.split(/\s+/)[0]?.slice(1) ?? '';
-        this.recordAudit({
+        await this.recordAudit({
           id: `audit_${crypto.randomUUID()}`,
           userId,
           username,
@@ -380,7 +380,7 @@ export class TelegramBotService implements INotificationChannel {
   /**
    * Record command execution and failures (Requirement 12)
    */
-  private recordAudit(record: CommandAuditRecord): void {
+  private async recordAudit(record: CommandAuditRecord): Promise<void> {
     this.auditHistory.unshift(record);
     if (this.auditHistory.length > this.maxAuditHistory) {
       this.auditHistory.pop();
@@ -398,7 +398,7 @@ export class TelegramBotService implements INotificationChannel {
     );
 
     // Persist to local disk audit log and PostgreSQL
-    void systemStateRepository.recordAudit(record);
+    await systemStateRepository.recordAudit(record);
     if (prismaService.connected) {
       try {
         const client = prismaService.getClient();

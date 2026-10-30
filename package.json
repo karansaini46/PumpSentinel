@@ -21,6 +21,8 @@
     "healthcheck": "tsx src/scripts/healthcheck.ts",
     "replay": "tsx src/scripts/replay.ts",
     "backtest": "tsx src/scripts/run-backtest.ts",
+    "db:backup": "./scripts/backup-db.sh",
+    "db:restore": "./scripts/restore-db.sh",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"
   },

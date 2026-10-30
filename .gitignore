@@ -44,4 +44,6 @@ Thumbs.db
 
 # Runtime Data & State
 data/
+backups/
+*.sql.gz
 

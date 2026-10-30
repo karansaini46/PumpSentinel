@@ -289,18 +289,56 @@ async function bootstrap(): Promise<void> {
     );
   }
 
-  // Graceful shutdown handling
+  // Graceful shutdown handling with re-entry guard and forced termination timeout
+  let isShuttingDown = false;
   const shutdown = async (signal: string) => {
-    logger.info({ signal }, 'Shutdown signal received. Cleaning up resources...');
-    await ingestionStreamService.stop();
-    await telegramBotService.stop();
-    await prismaService.disconnect();
-    logger.info('PumpSentinel terminated cleanly.');
-    process.exit(0);
+    if (isShuttingDown) {
+      logger.warn({ signal }, 'Shutdown already in progress. Ignoring duplicate signal.');
+      return;
+    }
+    isShuttingDown = true;
+    logger.info({ signal }, 'Shutdown signal received. Cleaning up resources cleanly...');
+
+    // Force terminate after 10 seconds if any handle fails to release
+    const forceExitTimer = setTimeout(() => {
+      logger.error('Graceful shutdown timed out after 10s. Forcing exit.');
+      process.exit(1);
+    }, 10000);
+    forceExitTimer.unref();
+
+    try {
+      // 1. Drain & stop notification queues
+      notificationsService.getQueue().stop();
+
+      // 2. Stop WebSocket / polling ingestion stream
+      await ingestionStreamService.stop();
+
+      // 3. Stop Telegram Bot polling / webhook listener
+      await telegramBotService.stop();
+
+      // 4. Disconnect Prisma PostgreSQL connection pool
+      await prismaService.disconnect();
+
+      clearTimeout(forceExitTimer);
+      logger.info('PumpSentinel terminated cleanly.');
+      process.exit(0);
+    } catch (err) {
+      logger.error({ err }, 'Error during graceful shutdown sequence');
+      process.exit(1);
+    }
   };
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  process.on('unhandledRejection', (reason) => {
+    logger.error({ reason }, 'Unhandled Promise Rejection detected');
+  });
+
+  process.on('uncaughtException', (err) => {
+    logger.fatal({ err }, 'Uncaught Exception detected. Initiating emergency shutdown.');
+    shutdown('UNCAUGHT_EXCEPTION').catch(() => process.exit(1));
+  });
 
   logger.info('🛡️ PumpSentinel is active and monitoring.');
 }

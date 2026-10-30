@@ -729,7 +729,7 @@ export class SolanaRpcAnalysisProvider implements ITokenAnalysisDataProvider {
     try {
       const res = await this.rpcClient.call(
         'getAccountInfo',
-        [bondingCurveAddress, { commitment: 'confirmed' }],
+        [bondingCurveAddress, { encoding: 'base64', commitment: 'confirmed' }],
         AccountInfoRpcSchema,
       );
 
